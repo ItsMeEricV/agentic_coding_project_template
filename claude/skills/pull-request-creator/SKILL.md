@@ -1,86 +1,60 @@
 ---
 name: pull-request-creator
-description: Use when creating a GitHub pull request with `gh pr create`, drafting/updating a PR body, replying to review comments, or resolving review threads. Enforces PR title format, mandatory body template, draft+browser+pr-review-toolkit workflow, comment attribution conventions, and safe shell quoting for bodies containing backticks.
+description: Use when creating, updating, or commenting on a GitHub pull request, drafting a PR body, replying to review comments, or resolving review threads.
 ---
 
 # Creating and Maintaining a Pull Request
 
 ## Overview
 
-Every PR Eric creates follows a fixed title format, a fixed body template, and a fixed post-creation workflow (draft → browser → pr-review-toolkit). Once the PR is open, every review comment gets attribution and a reply, and resolved threads get closed via GraphQL. This skill is the single source of truth — **do not rely on memory of prior conventions**.
+Every PR Eric creates follows a fixed title format, a fixed body template, and a fixed post-creation workflow. After it opens, every review comment gets attribution and a reply, and resolved threads get closed via GraphQL. This skill is the single source of truth — do not rely on memory of prior conventions.
 
-## Red Flags — STOP if you catch yourself doing these
+**Always use the GitHub MCP server (`mcp__github__*`) for PR operations.** Body travels as a JSON field, so no shell, no escaping, no backtick or quote hazards. `gh` is a fallback for operations the MCP doesn't expose (notably `resolveReviewThread`) or when the MCP is unavailable.
+
+**Violating the letter of these rules is violating the spirit.**
+
+## Red Flags — STOP
 
 | Rationalization | Reality |
 |---|---|
-| "This change is small, I don't need the full template" | All **Required body sections** below are mandatory regardless of change size. |
-| "I'll merge `origin/master` first since reviewers have already started" | Only after PR is marked ready for review. If still draft, **rebase** onto `origin/master` for clean history. |
-| "I'll push now and mark it ready myself" | Never mark a PR ready for review. Never push to a non-draft PR without explicit user confirmation. |
-| "The PR is already merged, but I have one more fix to push" | **Do not push to a merged PR's branch.** It recreates the branch on remote. Start a new branch. |
-| "I'll use a heredoc for the body since it has backticks" | Heredocs can misinterpret backticks. Use `--body-file` with a per-PR filename (see "Body file naming" below) or a single-quoted variable with escaped quotes. |
-| "I'll reuse `/tmp/pr-body.md` since it's already there" | **Never use a shared filename.** It collides with other Claude sessions and silently picks up a stale body from a prior PR. Always scope the filename to this PR (branch name while creating, PR number afterward). |
-| "I'll skip pr-review-toolkit, the PR looks good" | Always run `pr-review-toolkit` after creation and wait for user feedback before continuing. |
-| "This review comment is obviously wrong, I'll just ignore it" | Reply to **every** review comment with agree / disagree / defer. Silence reads as ignored. |
-| "I fixed the issue, the thread will sort itself out" | Resolve the thread explicitly via GraphQL `resolveReviewThread`. Leave open only what's deferred. |
+| "Small change, skip the full template" | Every body section below is mandatory. |
+| "I'll just use `gh pr create` real quick" | MCP is the default, not a peer of `gh`. |
+| "I'll mark it ready / push to a non-draft PR myself" | Never. Wait for user confirmation. |
+| "PR is merged but I have one more fix" | Don't push to a merged branch — start a new branch. |
+| "I'll skip `pr-review-toolkit`" | Run it after creation and wait for feedback. |
+| "This review comment is obviously wrong" | Reply agree / disagree / defer to **every** comment. |
+| "I fixed it, the thread will sort itself out" | Resolve threads explicitly via `resolveReviewThread`. |
 
 ## Workflow
 
-1. **Verify branch state** before anything:
-   - `git branch --show-current` matches intended branch
-   - PR branch (if updating) is not merged — `gh pr view <N> --json state`
-   - If updating an existing PR, check draft status — do NOT push to a non-draft PR without user confirmation
+1. **Verify branch state.** `git branch --show-current` matches intent. For updates: `mcp__github__pull_request_read` (`method: get`) to confirm the PR isn't merged and isn't already non-draft.
 
-2. **Write body to a per-PR file** (avoids all shell-quoting issues with backticks / single quotes, and never clobbers another session's in-flight body):
+2. **Create via MCP as draft.** Body, title, and everything else pass as JSON — paste markdown verbatim, backticks and quotes included:
 
-   **Creating a new PR** — use the current branch name in the filename, since the PR number doesn't exist yet:
-   ```bash
-   BRANCH=$(git branch --show-current)
-   BODY_FILE="/tmp/pr-body-${BRANCH}.md"
-   cat > "$BODY_FILE" <<'EOF'
-   ...body content...
-   EOF
-   gh pr create --draft --title "[Feature] description" --body-file "$BODY_FILE"
-
-   # Immediately rename to the PR-number-scoped file so future updates target the canonical name
-   PR_NUM=$(gh pr view --json number --jq .number)
-   mv "$BODY_FILE" "/tmp/pr-body-${PR_NUM}.md"
+   ```
+   mcp__github__create_pull_request
+     owner, repo, head, base: main, draft: true
+     title: "[Feature] description"
+     body:  <full markdown body>
    ```
 
-   **Updating an existing PR** — use the PR number directly:
-   ```bash
-   PR_NUM=<N>
-   BODY_FILE="/tmp/pr-body-${PR_NUM}.md"
-   cat > "$BODY_FILE" <<'EOF'
-   ...body content...
-   EOF
-   gh pr edit "$PR_NUM" --body-file "$BODY_FILE"
-   ```
+3. **Open in browser:** `gh pr view <N> --web`
 
-3. **Create as draft** and open in browser:
-   ```bash
-   gh pr view --web
-   ```
-
-4. **Run pr-review-toolkit** on the PR and wait for user feedback before continuing.
+4. **Run `pr-review-toolkit`** and wait for user feedback before continuing.
 
 ## Title format
 
-```
-[Feature] - brief description of changes - phase if applicable
-```
+`[Feature] - brief description - phase if applicable`
 
-- **[Feature]**: bracketed feature/component name, Title Case
-- **Brief description**: lowercase, concise
-- **Phase**: optional (include for multi-phase projects)
+- `[Feature]` — bracketed component, Title Case
+- description — lowercase, concise
+- phase — optional, multi-phase projects only
 
-Examples:
-- `[Hidden Channels Modal] Logic updates - Phase 5`
-- `[Search] Improve autocomplete performance`
-- `[Bugfix] Fix avatar rendering in DM list`
+Examples: `[Hidden Channels Modal] Logic updates - Phase 5`, `[Search] Improve autocomplete performance`, `[Bugfix] Fix avatar rendering in DM list`
 
-## Required body sections (ALL of these, always)
+## Body template (all sections, always)
 
-Include **every** section below. If a section has no content yet, include it with placeholders — do not omit. The only thing that's optional is the *content* of some subsections (e.g. `Files needing extra attention`), not the top-level sections themselves.
+Include every section. If empty, leave placeholder bullets — never omit the section header.
 
 ```markdown
 **Before this 🐝**
@@ -99,7 +73,7 @@ Include **every** section below. If a section has no content yet, include it wit
 -------
 
 - All unit tests pass
-- [Notable new unit/integration tests added, especially toggle on/off coverage]
+- [Notable new tests, especially toggle on/off coverage]
 - pr-review-toolkit was run; high-priority findings were fixed
 
 **Revertable? ♻️**
@@ -126,71 +100,15 @@ Include **every** section below. If a section has no content yet, include it wit
 - 📄 **Design doc**: [descriptive title](link)
 ```
 
-### Section rules
+**Rules:** Testing: never mention project-specific build/format commands CI runs automatically, never list individual test names. Links: descriptive text, never naked URLs. Formatting: emoji-after-titles, blank line after each header, no `---` separators, conversational bullets. Files-needing-extra-attention subsection only when genuinely risky.
 
-- **Testing**: NEVER mention project-specific build/format commands that CI runs automatically (e.g. linters, formatters, codegen). NEVER mention individual test names; just say "All unit tests pass."
-- **Notes for Reviewers → Files needing extra attention**: only include this subsection when there are genuinely risky/large files.
-- **Links**: always use descriptive link text, never naked URLs.
+## Review comments
 
-### Formatting rules
+**Attribute:** prepend `**[CLAUDE]**` to every PR comment and reply you author. Other agents use their own tag (`**[GEMINI]**`, `**[COPILOT]**`) — match `AGENTS.md`.
 
-- Emoji after section titles (as shown)
-- Blank line after each header before content
-- NO `---` separator lines between sections
-- Use conversational, detailed bullets
+**Reply to every comment** (human or bot) with one of: **agree** (and fix or open follow-up), **disagree** (and explain), **defer** (link an issue). Silence reads as ignored. Use `mcp__github__add_reply_to_pull_request_comment`.
 
-## Body file naming
-
-**Never write to a shared filename like `/tmp/pr-body.md`.** Multiple Claude sessions run in parallel and a stale file from a previous PR will silently be reused. Always scope the filename to *this* PR:
-
-- **Before the PR exists**: use the branch name — `/tmp/pr-body-${BRANCH}.md`
-- **After creation / when updating**: use the PR number — `/tmp/pr-body-${PR_NUM}.md`
-- Rename from branch-scoped → PR-number-scoped immediately after `gh pr create` succeeds, so future edits in the same session (or later sessions) find the canonical file.
-
-The PR-number file persists on disk; that's intentional — if you come back later to add something, the prior body is exactly where you left it. Just rewrite the file from scratch rather than appending, unless the user explicitly asks to amend.
-
-## Shell quoting for PR bodies
-
-Backticks in bodies (code references, inline snippets) are the #1 source of broken PRs. Pick one of:
-
-```bash
-# Best — write body to a per-PR file
-BODY_FILE="/tmp/pr-body-$(git branch --show-current).md"
-cat > "$BODY_FILE" <<'EOF'
-Body with `backticks` and it's safe
-EOF
-gh pr create --draft --title "..." --body-file "$BODY_FILE"
-
-# Also fine — single-quoted variable, escape apostrophes with '"'"'
-PR_BODY='Body with `backticks` and it'"'"'s safe'
-gh pr create --draft --title "..." --body "$PR_BODY"
-
-# Avoid — $(cat <<'EOF' …) can still misinterpret backticks in some shells
-```
-
-## Review comments: attribution
-
-Always prepend `**[CLAUDE]**` to PR comments and review replies you author, so they're visually separable from human and other-bot comments at a glance.
-
-Other agents in the same repo should use their own tag (e.g. `**[GEMINI]**`, `**[COPILOT]**`). Match whatever convention the project's `AGENTS.md` documents.
-
-## Review comments: responding
-
-Reply to **every** review comment (human or bot) with one of three assessments:
-
-- **Agree** — and either fix in this PR or open a follow-up issue.
-- **Disagree** — and explain why, briefly.
-- **Defer** — acknowledge it's worth doing, but not in this PR; link an issue if one exists.
-
-Don't leave review comments hanging. Silence reads as "ignored."
-
-Prefer the GitHub MCP server (`mcp__github__add_reply_to_pull_request_comment`) for replies. Fall back to `gh api repos/{owner}/{repo}/pulls/{pr}/comments/{id}/replies` when the MCP isn't available.
-
-## Resolving review threads
-
-After fixing an issue raised in a review comment, **resolve the thread** so the PR's unresolved-count reflects reality. Leave threads open for acknowledged-but-deferred items — they serve as a checklist.
-
-Resolution goes through GitHub's GraphQL `resolveReviewThread` mutation (the REST API does not expose this):
+**Resolve threads** after fixing — leaves the unresolved-count honest. Leave open only what's deferred. The MCP doesn't expose this; use `gh`:
 
 ```bash
 gh api graphql -f query='
@@ -201,25 +119,24 @@ gh api graphql -f query='
   }' -f threadId="$THREAD_ID"
 ```
 
-Get thread IDs from the PR's review threads via `gh api graphql` with a query on `pullRequest.reviewThreads`.
+Thread IDs come from `mcp__github__pull_request_read` with `method: get_review_comments`.
 
-## Project-specific automated reviewers
+If the project wires in an extra automated reviewer (e.g. a Gemini script), invocation is project-specific — see its `AGENTS.md`. For multi-turn reviewer sessions, generate a session UUID up front and pass it on every call.
 
-Some projects wire in an additional automated reviewer beyond `pr-review-toolkit` (e.g. a Gemini reviewer script). Invocation is project-specific — see the project's `AGENTS.md`.
+## Fallback: MCP unavailable
 
-For multi-turn reviewer sessions, generate a session UUID at the start and pass it on every subsequent call. This scopes conversation history to the current PR and prevents stale context from earlier reviews leaking in.
+If `mcp__github__*` is missing (different harness, outage), use `gh`. The body-as-shell-arg problem is real **only here** — backticks and embedded quotes need handling:
 
-## Common mistakes
+```bash
+# Plain bodies: inline works
+gh pr create --draft --title "..." --body "$BODY"
 
-| Mistake | Fix |
-|---|---|
-| Used naked URL in Links section | Wrap in descriptive link text |
-| Mentioned project-specific build/format commands in Testing | Delete — CI runs these |
-| Listed individual test names in Testing | Replace with "All unit tests pass" |
-| Used `--body "$(cat <<EOF...)"` with backticks in body | Use `--body-file "/tmp/pr-body-${BRANCH_OR_PR_NUM}.md"` instead |
-| Wrote body to shared `/tmp/pr-body.md` | Scope to this PR: `/tmp/pr-body-${BRANCH}.md` while creating, `/tmp/pr-body-${PR_NUM}.md` after |
-| Created PR non-draft | Always pass `--draft` |
-| Skipped `pr-review-toolkit` run | Run it and wait for user feedback |
-| Forgot to open PR in browser | `gh pr view --web` immediately after creation |
-| Left a review comment unanswered | Reply agree / disagree / defer to every comment |
-| Forgot to resolve a thread after fixing | `gh api graphql … resolveReviewThread` |
+# Bodies with backticks: write to a per-PR file so the shell doesn't eval them.
+# Scope filename to this PR (branch pre-creation, PR number after) so parallel
+# Claude sessions don't collide on a shared /tmp/pr-body.md.
+BRANCH=$(git branch --show-current)
+cat > "/tmp/pr-body-${BRANCH}.md" <<'EOF'
+...body with `backticks` and 'quotes'...
+EOF
+gh pr create --draft --title "..." --body-file "/tmp/pr-body-${BRANCH}.md"
+```
