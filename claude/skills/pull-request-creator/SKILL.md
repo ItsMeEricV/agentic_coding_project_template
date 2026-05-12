@@ -1,15 +1,15 @@
 ---
 name: pull-request-creator
-description: Use when creating, updating, or commenting on a GitHub pull request, drafting a PR body, replying to review comments, or resolving review threads.
+description: Use when creating, updating, or commenting on a GitHub pull request, drafting a PR body, or replying to review comments.
 ---
 
 # Creating and Maintaining a Pull Request
 
 ## Overview
 
-Every PR follows a fixed title format, a fixed body template, and a fixed post-creation workflow. After it opens, every review comment gets attribution and a reply, and resolved threads get closed via GraphQL. This skill is the single source of truth — do not rely on memory of prior conventions.
+Every PR follows a fixed title format, a fixed body template, and a fixed post-creation workflow. After it opens, every review comment gets attribution and a reply. This skill is the single source of truth — do not rely on memory of prior conventions.
 
-**Always use the GitHub MCP server (`mcp__github__*`) for PR operations.** Body travels as a JSON field, so no shell, no escaping, no backtick or quote hazards. `gh` is a fallback for operations the MCP doesn't expose (notably `resolveReviewThread`) or when the MCP is unavailable.
+**Always use the GitHub MCP server (`mcp__github__*`) for PR operations.** Body travels as a JSON field, so no shell, no escaping, no backtick or quote hazards. `gh` is a fallback for operations the MCP doesn't expose or when the MCP is unavailable.
 
 **Violating the letter of these rules is violating the spirit.**
 
@@ -23,7 +23,6 @@ Every PR follows a fixed title format, a fixed body template, and a fixed post-c
 | "PR is merged but I have one more fix" | Don't push to a merged branch — start a new branch. |
 | "I'll skip `pr-review-toolkit`" | Run it after creation and wait for feedback. |
 | "This review comment is obviously wrong" | Reply agree / disagree / defer to **every** comment. |
-| "I fixed it, the thread will sort itself out" | Resolve threads explicitly via `resolveReviewThread`. |
 
 ## Workflow
 
@@ -108,19 +107,6 @@ Include every section. If empty, leave placeholder bullets — never omit the se
 
 **Reply to every comment** (human or bot) with one of: **agree** (and fix or open follow-up), **disagree** (and explain), **defer** (link an issue). Silence reads as ignored. Use `mcp__github__add_reply_to_pull_request_comment`.
 
-**Resolve threads** after fixing — leaves the unresolved-count honest. Leave open only what's deferred. The MCP doesn't expose this; use `gh`:
-
-```bash
-gh api graphql -f query='
-  mutation($threadId: ID!) {
-    resolveReviewThread(input: {threadId: $threadId}) {
-      thread { id isResolved }
-    }
-  }' -f threadId="$THREAD_ID"
-```
-
-Thread IDs come from `mcp__github__pull_request_read` with `method: get_review_comments`.
-
 If the project wires in an extra automated reviewer (e.g. a Gemini script), invocation is project-specific — see its `AGENTS.md`. For multi-turn reviewer sessions, generate a session UUID up front and pass it on every call.
 
 ## Fallback: MCP unavailable
@@ -153,4 +139,3 @@ gh pr create --draft --title "..." --body-file "/tmp/pr-body-${BRANCH}.md"
 | Skipped `pr-review-toolkit` run | Run it and wait for user feedback |
 | Forgot to open PR in browser | `gh pr view <N> --web` after creation |
 | Left a review comment unanswered | Reply agree / disagree / defer to every comment |
-| Forgot to resolve a thread after fixing | `gh api graphql … resolveReviewThread` |
