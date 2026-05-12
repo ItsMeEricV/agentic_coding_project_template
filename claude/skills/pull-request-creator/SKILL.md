@@ -7,7 +7,7 @@ description: Use when creating, updating, or commenting on a GitHub pull request
 
 ## Overview
 
-Every PR Eric creates follows a fixed title format, a fixed body template, and a fixed post-creation workflow. After it opens, every review comment gets attribution and a reply, and resolved threads get closed via GraphQL. This skill is the single source of truth — do not rely on memory of prior conventions.
+Every PR follows a fixed title format, a fixed body template, and a fixed post-creation workflow. After it opens, every review comment gets attribution and a reply, and resolved threads get closed via GraphQL. This skill is the single source of truth — do not rely on memory of prior conventions.
 
 **Always use the GitHub MCP server (`mcp__github__*`) for PR operations.** Body travels as a JSON field, so no shell, no escaping, no backtick or quote hazards. `gh` is a fallback for operations the MCP doesn't expose (notably `resolveReviewThread`) or when the MCP is unavailable.
 
@@ -19,7 +19,7 @@ Every PR Eric creates follows a fixed title format, a fixed body template, and a
 |---|---|
 | "Small change, skip the full template" | Every body section below is mandatory. |
 | "I'll just use `gh pr create` real quick" | MCP is the default, not a peer of `gh`. |
-| "I'll mark it ready / push to a non-draft PR myself" | Never. Wait for user confirmation. |
+| "I'll mark a draft PR ready / push to a non-draft PR myself" | Never. Wait for user confirmation. |
 | "PR is merged but I have one more fix" | Don't push to a merged branch — start a new branch. |
 | "I'll skip `pr-review-toolkit`" | Run it after creation and wait for feedback. |
 | "This review comment is obviously wrong" | Reply agree / disagree / defer to **every** comment. |
@@ -29,11 +29,11 @@ Every PR Eric creates follows a fixed title format, a fixed body template, and a
 
 1. **Verify branch state.** `git branch --show-current` matches intent. For updates: `mcp__github__pull_request_read` (`method: get`) to confirm the PR isn't merged and isn't already non-draft.
 
-2. **Create via MCP as draft.** Body, title, and everything else pass as JSON — paste markdown verbatim, backticks and quotes included:
+2. **Create via MCP.** Body, title, and everything else pass as JSON — paste markdown verbatim, backticks and quotes included. **Default to `draft: true`** unless the project's `CLAUDE.md` or `AGENTS.md` specifies otherwise.
 
    ```
    mcp__github__create_pull_request
-     owner, repo, head, base: main, draft: true
+     owner, repo, head, base: main, draft: <per project policy>
      title: "[Feature] description"
      body:  <full markdown body>
    ```
@@ -104,7 +104,7 @@ Include every section. If empty, leave placeholder bullets — never omit the se
 
 ## Review comments
 
-**Attribute:** prepend `**[CLAUDE]**` to every PR comment and reply you author. Other agents use their own tag (`**[GEMINI]**`, `**[COPILOT]**`) — match `AGENTS.md`.
+**Attribute:** prepend `**[CLAUDE]**` to every PR comment and review reply you write. Other agents use their own tag (`**[GEMINI]**`, `**[COPILOT]**`) — match `AGENTS.md`.
 
 **Reply to every comment** (human or bot) with one of: **agree** (and fix or open follow-up), **disagree** (and explain), **defer** (link an issue). Silence reads as ignored. Use `mcp__github__add_reply_to_pull_request_comment`.
 
@@ -140,3 +140,17 @@ cat > "/tmp/pr-body-${BRANCH}.md" <<'EOF'
 EOF
 gh pr create --draft --title "..." --body-file "/tmp/pr-body-${BRANCH}.md"
 ```
+
+## Common mistakes
+
+| Mistake | Fix |
+|---|---|
+| Reached for `gh pr create` first | Default to MCP `create_pull_request` |
+| Used naked URL in Links section | Wrap in descriptive link text |
+| Listed individual test names in Testing | Replace with "All unit tests pass" |
+| Mentioned project-specific build/format commands in Testing | Delete — CI runs these |
+| Hard-coded `draft: true` regardless of project | Check the project's `CLAUDE.md` / `AGENTS.md` first |
+| Skipped `pr-review-toolkit` run | Run it and wait for user feedback |
+| Forgot to open PR in browser | `gh pr view <N> --web` after creation |
+| Left a review comment unanswered | Reply agree / disagree / defer to every comment |
+| Forgot to resolve a thread after fixing | `gh api graphql … resolveReviewThread` |
