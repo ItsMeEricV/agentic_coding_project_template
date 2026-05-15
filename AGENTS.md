@@ -120,6 +120,7 @@ _Note: If your project uses a monorepo or subdirectory structure, ensure you run
 
 If your project uses Docker for local development:
 
+- **Before editing `docker/`:** invoke the `new-project-setup` skill. It walks through fork-time decisions (project slug, ORM choice, ngrok, PG extensions) and substitutes placeholders in one batch. Editing files directly causes silent failures — orphaned ORM scaffolding and shared-network collisions between projects.
 - **Hot-reload:** Use volume mounts so source file changes are picked up without rebuilds.
 - **When to rebuild:** After changing `package.json`/lock files, `Dockerfile`, `docker-compose.yml`, or ORM schema files.
 - **Anonymous volumes:** When rebuilding after dependency changes, use `docker compose up -d --build -V <service>` to recreate anonymous volumes (e.g., `node_modules`). Without `-V`, Docker reuses stale volumes and new packages will be missing.
