@@ -1,0 +1,15 @@
+# PostgreSQL 18 with pgvector.
+#
+# PG18 includes UUIDv7 natively via the built-in uuidv7() function — no
+# extension needed for DB-side UUIDv7 generation. (On PG14-17, the same
+# capability requires the pg_uuidv7 extension and a two-stage build to compile
+# it from source; PG18 obviates that.)
+#
+# pgvector ships as an apt package matched to the PG major version. Add other
+# PG extensions here as needed (PostGIS, pg_partman, etc.) — each is an
+# additional apt line in the same RUN.
+
+FROM postgres:18
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    postgresql-18-pgvector \
+    && rm -rf /var/lib/apt/lists/*

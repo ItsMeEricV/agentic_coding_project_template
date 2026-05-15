@@ -1,0 +1,63 @@
+# Long-lived, machine-wide infra. Bring up ONCE per machine (not per worktree):
+#   docker compose -f docker-compose.infra.yml up -d
+#
+# Enable optional services by setting COMPOSE_PROFILES before `up`:
+#   COMPOSE_PROFILES=ngrok docker compose -f docker-compose.infra.yml up -d
+#
+# Owns the shared Docker network `app_shared` — every per-worktree app stack
+# joins this network to reach the db container. Substitute `app_shared` for
+# your project's slug at bootstrap (see ../README.md and the new-project-setup
+# skill); otherwise two projects on the same machine will collide on this name.
+
+services:
+  db:
+    build:
+      context: .
+      dockerfile: Dockerfile.db
+    container_name: db
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=app_dev
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app_shared
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+  ngrok:
+    profiles: [ngrok]
+    image: ngrok/ngrok:latest
+    # Tunnels traffic from your reserved ngrok domain to whichever worktree is
+    # publishing host port 3000. Only one worktree at a time gets the public URL
+    # (the one that set WEB_PORT=3000); other worktrees still run locally, just
+    # unexposed. Replace YOUR_NGROK_DOMAIN with your reserved ngrok hostname.
+    command: http host.docker.internal:3000 --domain YOUR_NGROK_DOMAIN
+    # NGROK_AUTHTOKEN must be set in .env.docker.
+    env_file:
+      - ./.env.docker
+    ports:
+      - "4040:4040"
+    networks:
+      - app_shared
+    deploy:
+      resources:
+        limits:
+          memory: 500m
+
+volumes:
+  postgres_data:
+
+networks:
+  app_shared:
+    name: app_shared

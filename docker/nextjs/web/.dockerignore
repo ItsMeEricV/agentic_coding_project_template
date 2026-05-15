@@ -1,0 +1,10 @@
+Dockerfile
+Dockerfile.dev
+.dockerignore
+node_modules
+*.log
+.next
+out
+.git
+.env*.local
+.vercel

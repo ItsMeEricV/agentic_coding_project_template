@@ -1,0 +1,82 @@
+# Per-worktree app stack. Bring up ONCE per worktree:
+#   docker compose -f docker-compose.app.yml --env-file .env.docker up
+#
+# Enable optional services by setting COMPOSE_PROFILES in .env.docker:
+#   COMPOSE_PROFILES=studio   # brings up the ORM Studio service below
+#
+# Requires the `app_shared` network created by docker-compose.infra.yml. If you
+# rename `app_shared` at bootstrap, update both files in lockstep.
+#
+# Required env vars (set in .env.docker; ${VAR:?...} fails loud if unset):
+#   WEB_PORT              — unique host port for the web service per worktree
+#   STUDIO_PORT           — unique host port for ORM Studio per worktree
+#   WORKTREE_DB           — worktree-specific database name (inside shared db)
+#   COMPOSE_PROJECT_NAME  — unique Compose project name per worktree
+
+services:
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile.dev
+    ports:
+      - "${WEB_PORT:?WEB_PORT is required — set it in .env.docker}:3000"
+    # Named volumes (not anonymous) for node_modules and the framework build
+    # cache. Anonymous volumes leak: `up --build -V` creates a fresh anonymous
+    # volume on every rebuild without cleaning the old one, so repeated worktree
+    # rebuilds can accumulate gigabytes of orphaned volumes within days. Named
+    # volumes are project-scoped, reused across rebuilds, and cleaned
+    # deterministically by `docker compose down -v`.
+    volumes:
+      - ./web:/app
+      - web_node_modules:/app/node_modules
+      - web_next_cache:/app/.next
+    environment:
+      - NODE_ENV=development
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/${WORKTREE_DB:?WORKTREE_DB is required — set it in .env.docker}
+      # Auth-cookie namespacing — keeps cookies unique per worktree so multiple
+      # localhost dev servers don't cross-contaminate session state. Used by
+      # Auth.js / NextAuth when COMPOSE_PROJECT_NAME is part of the cookie name.
+      - COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:?COMPOSE_PROJECT_NAME is required — set it in .env.docker}
+      # AUTH_URL: Next.js listens on :3000 inside the container, but the host
+      # publishes it on WEB_PORT. Auth.js's Host-header detection isn't reliable
+      # through Docker port mapping, so set the external URL explicitly. Use
+      # 127.0.0.1 rather than localhost — some OAuth providers refuse
+      # `localhost` as a redirect URI but accept 127.0.0.1.
+      # In production (no WEB_PORT in env), leave unset so Auth.js uses trustHost.
+      - AUTH_URL=http://127.0.0.1:${WEB_PORT}
+    networks:
+      - app_shared
+    deploy:
+      resources:
+        limits:
+          # 6g is sized for Next.js + TypeScript + Prisma codegen during dev/build.
+          # Lower to 2-3g if the project is API-only or skips heavy SSR.
+          memory: 6g
+
+  # --- ORM: Prisma --- (swap block for Drizzle / other — see README.md)
+  studio:
+    profiles: [studio]
+    build:
+      context: ./web
+      dockerfile: Dockerfile.dev
+    ports:
+      - "${STUDIO_PORT:?STUDIO_PORT is required — set it in .env.docker}:5555"
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/${WORKTREE_DB}
+    networks:
+      - app_shared
+    command: npx prisma studio --port 5555 --browser none
+    deploy:
+      resources:
+        limits:
+          memory: 500m
+  # --- /ORM ---
+
+volumes:
+  web_node_modules:
+  web_next_cache:
+
+networks:
+  app_shared:
+    external: true
+    name: app_shared
