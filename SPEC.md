@@ -49,16 +49,4 @@ Break the project down into logical sets of release criteria.
 1. **Prototype:** Implement a subset of P0 requirements to test core functionality and feasibility.
 2. **GA (General Availability):** All P0 requirements are complete, tested, and documented.
 
-## Hardening Checklist
-
-A `[x]` / `[ ]` checklist for ongoing technical-debt and operational-hardening items that are not tied to specific release milestones. These outlive Milestones — you will always have new ones.
-
-### Examples
-
-- [ ] **Timezones:** convert all DateTime columns to `timestamptz` with explicit timezone storage.
-- [ ] **Backups:** automated nightly DB snapshots with a quarterly verified restore drill.
-- [ ] **Secrets rotation:** runbook for every secret listed in the env-var table, with an annual rotation cadence.
-- [ ] **Dependency upgrades:** monthly cadence; same-day for security patches.
-- [ ] **Observability:** structured logging with request-ID propagation, error tracking with PII redaction.
-
-Check items off as they ship. Move durable wins (e.g. UUIDv7 conversion, search-index migration) into this section once complete so future contributors can see the project's hardening posture at a glance.
+> **Where do hardening / operational items live?** Standards you commit to (e.g. "automated nightly backups with quarterly restore drill", "monthly dependency upgrade cadence") belong in **Technical Requirements** above. Tracking whether each one is done yet belongs in **IMPLEMENTATION_PLAN.md**. SPEC.md describes *what the project is*, not *what work is outstanding*.
