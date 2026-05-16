@@ -27,6 +27,21 @@ This skill captures the fork-time questions and the exact substitutions each ans
 
 Ask the questions below in order. After all answers are in, perform the substitutions in one batch and surface the diff via `git diff` before any commit.
 
+### Q0: Web app prerequisite (BLOCKING)
+
+The Docker stamp's `web/Dockerfile.dev` builds from `./web` and expects a `package.json` (and, for the Prisma default, `prisma/schema.prisma` + `prisma.config.ts`). On a brand-new fork these don't exist yet — the first `docker compose up web` will fail at the `COPY package*.json ./` step.
+
+Check whether `web/package.json` exists. If yes, skip to Q1. If no, ask: _"There's no Next.js app in `web/` yet. Run `npx create-next-app@latest web` first? I'll walk through the prompts."_
+
+Do not pin the Next.js version or force any specific create-next-app prompts — let the user pick TypeScript, ESLint, Tailwind, App Router, etc. Once `web/package.json` exists, return to this skill for Q1.
+
+ORM-specific init runs **after** Q2 (so the install reflects the ORM the user actually chooses):
+
+- Prisma → `cd web && npm install prisma @prisma/client && npx prisma init`
+- Drizzle → `cd web && npm install drizzle-orm pg && npm install -D drizzle-kit @types/pg`
+- Kysely / other → install per the user's preference; ask where migrations live
+- No ORM → skip the install entirely
+
 ### Q1: Project slug + host-port collision (BLOCKING)
 
 Ask: _"What's the project slug? It namespaces the shared Docker network, the db container name, and per-worktree containers — needed to avoid collisions with other projects on this machine. Lowercase, hyphen- or underscore-separated. Example: `taskbird`, `analytics_pipeline`."_
@@ -37,6 +52,7 @@ Substitutions:
 
 - `docker-compose.infra.yml` — `app_shared` → `<slug>_shared` (network name _and_ the `name:` field)
 - `docker-compose.infra.yml` — `container_name: app_db` → `container_name: <slug>_db` (the network alias `db` stays unchanged, so the app stack's `DATABASE_URL` keeps using `db:5432` regardless)
+- `docker-compose.infra.yml` — volume `app_postgres_data` → `<slug>_postgres_data` (top-level `volumes:` block _and_ the db service's mount)
 - `docker-compose.infra.yml` — host port in `"5432:5432"` → `"<host-port>:5432"` (only the left side; the container always listens on 5432 internally)
 - `docker-compose.infra.yml` — `POSTGRES_DB` from `app_dev` → `<slug>_dev` (the catalog database, not the worktree one)
 - `docker-compose.app.yml` — `app_shared` → `<slug>_shared` (network name _and_ the `name:` field)
@@ -63,10 +79,16 @@ Ask: _"Which ORM? Default is Prisma. Other options: Drizzle, Kysely, no ORM."_
 
 Ask: _"Does this project need a public ngrok tunnel for the dev server? Common reasons: OAuth callbacks requiring HTTPS, webhook testing from third parties, sharing previews with non-devs."_
 
-**Yes** → ask for the reserved ngrok domain. ngrok's free tier supports one static domain per account, so document which worktree (which `WEB_PORT`) wins the tunnel.
+**Yes** → two more questions:
 
-- `docker-compose.infra.yml`: `YOUR_NGROK_DOMAIN` → the domain.
-- `.env.docker.example`: uncomment `COMPOSE_PROFILES` and include `ngrok`; uncomment `NGROK_AUTHTOKEN=` placeholder.
+1. _"What's your reserved ngrok domain?"_ (free tier supports one static domain per account)
+2. _"Which worktree's `WEB_PORT` wins the public URL?"_ Default 3000 (the "main" worktree). Only one worktree at a time can be tunneled because the ngrok command targets a single host port.
+
+Substitutions:
+
+- `docker-compose.infra.yml` (ngrok `command`) — `YOUR_NGROK_DOMAIN` → the domain.
+- `docker-compose.infra.yml` (ngrok `command`) — `host.docker.internal:3000` → `host.docker.internal:<chosen-port>` if the user picked a non-3000 port.
+- `.env.docker.example` — uncomment `COMPOSE_PROFILES` and include `ngrok`; uncomment `NGROK_AUTHTOKEN=` placeholder.
 
 **No** → leave the service in place (profile-gated, won't run). The user can flip it on later with one env-var change, no merge.
 
@@ -96,13 +118,13 @@ If lowering: substitute the `memory:` line in `docker-compose.app.yml` (web) —
 
 ## Common mistakes
 
-| Mistake                                                 | Fix                                                                                                                                                                      |
-| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Substituted `app_shared` in only one file               | The two compose files must agree exactly — name mismatch means the app stack can't join the infra network.                                                               |
-| Substituted network but forgot `container_name` / port  | Two projects on the same machine collide on `container_name: app_db` or host port 5432. The network alias `db` stays stable; only the container name and host port move. |
-| Replaced only some ORM fences                           | An app.yml `studio:` running Prisma against a Drizzle codebase fails on `up`. Replace _all_ fences in _both_ files.                                                      |
-| Skipped Q4 and added an extension later                 | `down -v` + image rebuild = volume loss. Bring this up at bootstrap.                                                                                                     |
-| Forgot ngrok target port                                | ngrok's `host.docker.internal:3000` only forwards to the worktree publishing `WEB_PORT=3000`. Document which worktree that is.                                           |
-| Edited `.env.docker.example` instead of `.env.docker`   | `.example` is the source of truth for which vars _exist_; the real one is per-worktree, gitignored, and is what Compose actually reads.                                  |
-| Ran infra `up` without `--env-file .env.docker`         | `COMPOSE_PROFILES=ngrok` in `.env.docker` is silently ignored without the flag, so ngrok stays disabled even when the user thought they enabled it.                      |
-| Ran `docker compose restart` to pick up env-var changes | `restart` does not re-read env files. Use `up -d` (with `--build -V` if dependencies changed).                                                                           |
+| Mistake                                                         | Fix                                                                                                                                                                                                                     |
+| --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Substituted `app_shared` in only one file                       | The two compose files must agree exactly — name mismatch means the app stack can't join the infra network.                                                                                                              |
+| Substituted network but forgot `container_name` / port / volume | Two projects on the same machine collide on `container_name: app_db`, host port 5432, or the `app_postgres_data` volume. The network alias `db` stays stable; only the container name, host port, and volume name move. |
+| Replaced only some ORM fences                                   | An app.yml `studio:` running Prisma against a Drizzle codebase fails on `up`. Replace _all_ fences in _both_ files.                                                                                                     |
+| Skipped Q4 and added an extension later                         | `down -v` + image rebuild = volume loss. Bring this up at bootstrap.                                                                                                                                                    |
+| Forgot ngrok target port                                        | ngrok's `host.docker.internal:3000` only forwards to the worktree publishing `WEB_PORT=3000`. Document which worktree that is.                                                                                          |
+| Edited `.env.docker.example` instead of `.env.docker`           | `.example` is the source of truth for which vars _exist_; the real one is per-worktree, gitignored, and is what Compose actually reads.                                                                                 |
+| Ran infra `up` without `--env-file .env.docker`                 | `COMPOSE_PROFILES=ngrok` in `.env.docker` is silently ignored without the flag, so ngrok stays disabled even when the user thought they enabled it.                                                                     |
+| Ran `docker compose restart` to pick up env-var changes         | `restart` does not re-read env files. Use `up -d` (with `--build -V` if dependencies changed).                                                                                                                          |
