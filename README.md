@@ -1,46 +1,91 @@
-# Agentic Coding Project Template
+# Agentic Coding Project Template 🛠️
 
-Foundation files for a new AI-assisted coding project. Two halves: **prompt-shelf markdown** (the "Source of Truth" for both human developers and AI agents) and **drop-in Docker dev stacks** for common tech stacks.
+> **What is this?** A drop-in foundation for AI-assisted coding projects. It bundles the markdown files agents read to understand your project, a set of Claude Code skills that automate common workflows, opinionated Docker dev stacks, and a few small scripts. Fork the relevant pieces into a new project, fill in the placeholders, and your coding agents arrive pre-briefed.
 
-## The prompt shelf
+The repo has four halves, each independently useful:
 
-1. **`SPEC.md`** — **The "What."** Product requirements, user stories, and milestones.
-2. **`ARCHITECTURE.md`** — **The "Where."** Tech stack, directory structure, and system flow.
-3. **`AGENTS.md`** — **The "How."** Engineering standards, anti-patterns, and git workflow.
-4. **`MEMORY.md`** — **The "Journal."** An AI-maintained record of quirks, bugs, and patterns. Prevents repeating past mistakes and captures non-obvious context.
-5. **`IMPLEMENTATION_PLAN.md`** — **The "When."** A living document for task tracking and inter-agent handovers. Created when execution starts.
+| Pillar | What it is | When you want it |
+| --- | --- | --- |
+| 📋 **Prompt shelf** | Source-of-truth markdown that humans and agents both read | Always |
+| 🤖 **Claude skills** | Reusable workflows the agent invokes on demand | Always (if you use Claude Code) |
+| 🐳 **Docker stacks** | Opinionated `docker-compose` setups per tech stack | When your project ships a backend / DB |
+| 🪛 **Scripts** | Standalone CLIs that operate on the project | As needed |
 
-## The Docker stacks
+---
 
-`docker/` ships opinionated drop-in development stacks for common project shapes:
+## 📋 The prompt shelf
+
+The contract between you, your project, and any agent working on it. Keep these tight and current — they're loaded into every coding session.
+
+1. **`SPEC.md`** — **The "What."** Product requirements, user stories, milestones.
+2. **`ARCHITECTURE.md`** — **The "Where."** Tech stack, directory structure, system flow.
+3. **`AGENTS.md`** — **The "How."** Engineering standards, anti-patterns, git workflow. The single source of truth for technical rules.
+4. **`MEMORY.md`** — **The "Journal."** Agent-maintained record of quirks, bugs, and patterns. Prevents repeating past mistakes.
+5. **`IMPLEMENTATION_PLAN.md`** — **The "When."** Living task tracker and inter-agent handoff doc. Created when execution starts.
+
+Two thin per-agent files (`CLAUDE.md`, `GEMINI.md`) point each tool at `AGENTS.md` so the rules stay in one place.
+
+## 🤖 The Claude skill bundle
+
+`claude/skills/` ships seven Claude Code skills that get symlinked into your shell's `~/.claude/skills/` directory. Each is a self-contained workflow the agent invokes automatically when it matches your request.
+
+| Skill | What it does |
+| --- | --- |
+| 🧑‍⚖️ **`agent-code-reviewer`** | Get a second-opinion review from a different model (Gemini or Codex) via `cli/agent_code_reviewer.py`. Reviewer feedback only — never writes code. |
+| 🎓 **`deep-discuss`** | The agent grills you on a plan or design until you've resolved every branch of the decision tree. Use to stress-test a design before building it. |
+| 🤝 **`handoff`** | Compact the current conversation into a handoff doc another agent (or future-you) can pick up. |
+| 🌱 **`new-project-setup`** | Walks fork-time decisions (project slug, ORM choice, ngrok, PG extensions, port collisions) and substitutes Docker placeholders in one batch. |
+| 🔄 **`project-template-sync`** | Back-ports lessons from a downstream project into this template. Generalizes project-specific rules into reusable foundation. |
+| 🚀 **`pull-request-creator`** | Fixed PR title format, body template, attribution conventions, and `pr-review-toolkit` follow-up. |
+| 🔭 **`sentry-cli`** | Inspect Sentry issues, events, projects, orgs from the command line. |
+
+The global rules file (`claude/CLAUDE.md`) ships alongside the skills as a starter for your `~/.claude/CLAUDE.md`.
+
+## 🐳 The Docker stacks
+
+`docker/` ships drop-in dev stacks. Each is a fork-and-customize starter, not a library.
 
 - **`docker/nextjs/`** — Next.js + PostgreSQL 18 + pgvector + Prisma (default; Drizzle swap documented). Two-file compose split (long-lived infra + per-worktree app) sized for multi-agent worktree development.
 
-Each stamp has its own README explaining placement, env vars, and profile activation. **Don't `cp -a` and edit by hand** — invoke the `new-project-setup` skill from your new project's directory. The skill walks through fork-time decisions (project slug, ORM choice, ngrok, PG extensions, host-port collisions) and substitutes placeholders in one batch.
+Each stamp has its own README explaining placement, env vars, and profile activation. **Don't `cp -a` and edit by hand** — invoke the `new-project-setup` skill from your new project's directory.
 
-## The tooling stubs
+## 🪛 The scripts
+
+`cli/` holds standalone tools that operate on the project but live outside the app code.
+
+| Script | Purpose |
+| --- | --- |
+| **`agent_code_reviewer.py`** | Multi-provider second-opinion reviewer (Gemini + Codex). Run `python3 cli/agent_code_reviewer.py --help` for flags, or invoke the `agent-code-reviewer` skill. |
+| **`worktree-add.sh`** | Create a new git worktree wired up for the Docker stack — auto-assigns ports, writes per-worktree `.env.docker`, prints bring-up commands. |
+
+See `cli/README.md` for script-authoring conventions.
+
+## ⚙️ The tooling stubs
 
 - **`.gitignore`** — covers `.env.docker`, `.env*.local`, `node_modules/`, framework build output. Prevents first-commit credential leaks.
 - **`.prettierrc`** + **`tsconfig.json`** — baseline configs that work out of the box for the Next.js stamp's `web/` directory.
-- **`.github/workflows/ci.yml`** — minimal CI: `prettier --check`, `tsc --noEmit`, test suite stub. Wire your project's test runner in once you have one.
-- **`cli/worktree-add.sh`** — helper for the worktree pattern: creates a new git worktree, picks unused ports, writes a per-worktree `.env.docker`, prints the bring-up commands.
+- **`.github/workflows/ci.yml`** — minimal CI: `prettier --check`, `tsc --noEmit`, test suite stub.
 
-## How to use this Template
+---
 
-1. **Copy** the prompt-shelf files (`SPEC.md`, `ARCHITECTURE.md`, `AGENTS.md`, `MEMORY.md`) and the tooling stubs (`.gitignore`, `.prettierrc`, `tsconfig.json`, `.github/`, `cli/`) to the root of your new project.
-2. **Edit `SPEC.md`** first to define the problem and requirements.
-3. **Refine `ARCHITECTURE.md`** to lock in your tech stack and folder structure.
-4. **Update `AGENTS.md`** with any project-specific standards and "Hard Refusal" anti-patterns.
-5. **Initialize `MEMORY.md`** (or let the AI do it) to start capturing project context.
-6. **Create `IMPLEMENTATION_PLAN.md`** (or let the AI do it) as you begin the execution phase.
-7. **For Docker:** copy the relevant `docker/<stamp>/` contents to the project root and invoke the `new-project-setup` skill — do not edit Docker files by hand.
+## 🧭 How to use this template
 
-## The Philosophy
+1. **Copy the prompt shelf** (`SPEC.md`, `ARCHITECTURE.md`, `AGENTS.md`, `MEMORY.md`) and the per-agent pointer files (`CLAUDE.md`, `GEMINI.md`) to your new project root.
+2. **Copy the tooling stubs** (`.gitignore`, `.prettierrc`, `tsconfig.json`, `.github/`, `cli/`).
+3. **Symlink the skills** into your Claude config: `ln -s ~/code/agentic_coding_project_template/claude/skills/* ~/.claude/skills/`.
+4. **Edit `SPEC.md`** first — define the problem and requirements.
+5. **Refine `ARCHITECTURE.md`** — lock in tech stack and folder structure.
+6. **Update `AGENTS.md`** with project-specific standards and "Hard Refusal" anti-patterns.
+7. **Initialize `MEMORY.md`** (or let the agent do it) to start capturing project context.
+8. **For Docker:** copy the relevant `docker/<stamp>/` contents to the project root and invoke the `new-project-setup` skill — do not edit Docker files by hand.
 
-Documentation is code. If an agent or a new developer cannot understand the project's intent and constraints by reading these files, the project is under-documented.
+## 💭 The philosophy
+
+**Documentation is code.** If an agent or a new developer cannot understand the project's intent and constraints by reading these files, the project is under-documented.
 
 - **`AGENTS.md`** ensures the rules of engagement are explicit.
-- **`MEMORY.md`** ensures that "hard-earned" context isn't lost between sessions.
-- **`IMPLEMENTATION_PLAN.md`** ensures that complex tasks are broken down and dependencies are respected.
+- **`MEMORY.md`** ensures hard-earned context isn't lost between sessions.
+- **`IMPLEMENTATION_PLAN.md`** ensures complex tasks are broken down and dependencies are respected.
+- **The skill bundle** ensures repeatable workflows don't drift from session to session.
 
 Use the "Good/Bad" examples within the template as a guide for your own documentation.
