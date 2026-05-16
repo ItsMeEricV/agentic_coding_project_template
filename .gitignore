@@ -19,6 +19,13 @@ yarn-debug.log*
 yarn-error.log*
 *.tsbuildinfo
 
+# Python (for cli/ scripts)
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
 # Build output
 .next/
 out/
