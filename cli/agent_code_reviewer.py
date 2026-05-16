@@ -583,6 +583,15 @@ def post_pr_review(
     pr_info = get_pr_info(pr_number)
     commit_id = pr_info.get("headRefOid", "")
 
+    if not diff and comments:
+        # Caller forgot to thread the diff through. Every comment will be
+        # bucketed to the body, which is correct-but-degraded — warn so the
+        # regression is visible instead of silently losing all inline anchors.
+        print(
+            f"Warning: post_pr_review called without diff but with {len(comments)} "
+            "comment(s); all will be posted in body, none inline",
+            file=sys.stderr,
+        )
     anchorable = _parse_diff_anchorable_lines(diff) if diff else {}
 
     valid_inline: list[dict] = []
@@ -658,7 +667,7 @@ def post_pr_review(
                 fallback_body += f" (line {c['line']})"
             fallback_body += f"\n{c['body']}\n\n"
 
-        subprocess.run(
+        retry = subprocess.run(
             [
                 "gh",
                 "api",
@@ -677,6 +686,12 @@ def post_pr_review(
             capture_output=True,
             text=True,
         )
+        if retry.returncode != 0:
+            # Both POSTs failed — surface the second error and exit non-zero so
+            # the caller doesn't see misleading green output.
+            print("Error: body-only retry also failed", file=sys.stderr)
+            print(f"  gh error: {retry.stderr[:500]}", file=sys.stderr)
+            sys.exit(1)
         print("Posted review as summary comment (no inline comments)", file=sys.stderr)
     else:
         print(
