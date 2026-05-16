@@ -7,6 +7,13 @@ on:
 
 jobs:
   check:
+    # Skip in the template repo itself — it ships no web/package.json by
+    # design (the user runs `npx create-next-app@latest web` at fork time),
+    # so `npm ci` here would fail. Forks have a different `github.repository`
+    # and CI runs normally on their first commit. Remove this `if:` if you
+    # ever want CI to gate template-repo changes too (you'd also need to add
+    # a real web/ — see the new-project-setup skill).
+    if: github.repository != 'ItsMeEricV/agentic_coding_project_template'
     runs-on: ubuntu-latest
     defaults:
       run:
