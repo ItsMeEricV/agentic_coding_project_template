@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        # Web app lives in web/ per the docker/nextjs/ stamp convention.
+        # If your project doesn't follow that layout, adjust working-directory.
+        working-directory: web
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci
+
+      # ORM: Prisma — uncomment if using Prisma; needed before tsc sees @prisma/client.
+      # - run: npx prisma generate
+
+      - name: Prettier check
+        # Run against the whole repo, not just web/, so root configs / docs / yml stay clean.
+        working-directory: ${{ github.workspace }}
+        run: npx --yes prettier --check .
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      # Uncomment once web/ has a test suite (vitest, jest, playwright unit).
+      # - name: Tests
+      #   run: npm test
