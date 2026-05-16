@@ -518,29 +518,114 @@ def get_pr_info(pr_number: str) -> dict:
     return json.loads(result.stdout)
 
 
+def _parse_diff_anchorable_lines(diff: str) -> dict[str, set[int]]:
+    """Return {path: set of new-file line numbers eligible for RIGHT-side
+    inline review comments} for a unified diff.
+
+    GitHub's PR review API rejects (422) any inline comment whose line
+    isn't inside a hunk on the side it targets. LLM reviewers regularly
+    hallucinate line numbers — off-the-end of files, on pure-deletion
+    lines, in unchanged regions. We pre-validate against this map and
+    bucket invalid anchors into the review body instead of losing them
+    to a 422.
+
+    RIGHT-side eligibility: lines that exist in the new file inside a
+    hunk — i.e. additions ('+') and context (' '). Pure deletions ('-')
+    are LEFT-side only.
+    """
+    result: dict[str, set[int]] = {}
+    current_path: str | None = None
+    current_new_line = 0
+    in_hunk = False
+    for raw in diff.splitlines():
+        m = re.match(r"^diff --git a/\S+ b/(\S+)", raw)
+        if m:
+            current_path = m.group(1)
+            result.setdefault(current_path, set())
+            in_hunk = False
+            continue
+        if current_path is None:
+            continue
+        m = re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@", raw)
+        if m:
+            current_new_line = int(m.group(1))
+            in_hunk = True
+            continue
+        if not in_hunk:
+            continue
+        if raw.startswith("+") and not raw.startswith("+++"):
+            result[current_path].add(current_new_line)
+            current_new_line += 1
+        elif raw.startswith(" "):
+            result[current_path].add(current_new_line)
+            current_new_line += 1
+        # '-' lines: no new-file advance. Other lines ('\\ No newline...'): skip.
+    return result
+
+
 def post_pr_review(
-    pr_number: str, summary: str, comments: list[dict], attribution: str
+    pr_number: str,
+    summary: str,
+    comments: list[dict],
+    attribution: str,
+    diff: str = "",
 ) -> None:
     """Post a review with inline comments on the PR using gh API. The
     `attribution` tag (e.g. "GEMINI" / "CODEX") prefixes every comment + the
-    review body so reviewers can tell at a glance which model authored each."""
+    review body so reviewers can tell at a glance which model authored each.
+
+    Comments whose (path, line) pair isn't a valid RIGHT-side anchor in the
+    PR diff get bucketed into the review body's "Additional comments"
+    section instead of being submitted as inline (which would 422). The
+    `diff` argument is the unified diff used to compute anchor eligibility;
+    pass the full pre-truncation diff so anchor validation matches what
+    GitHub sees, not what the model saw."""
     pr_info = get_pr_info(pr_number)
     commit_id = pr_info.get("headRefOid", "")
 
-    review_comments = []
+    anchorable = _parse_diff_anchorable_lines(diff) if diff else {}
+
+    valid_inline: list[dict] = []
+    invalid_fallback: list[dict] = []
     for c in comments:
-        comment: dict = {
+        line = c.get("line")
+        path = c.get("path", "")
+        if line and path in anchorable and line in anchorable[path]:
+            valid_inline.append(c)
+        else:
+            invalid_fallback.append(c)
+
+    body_parts = [f"## [{attribution}] Code Review", "", summary]
+    if invalid_fallback:
+        body_parts += [
+            "",
+            "### Additional comments",
+            "",
+            "_These anchors fell outside the diff (off-the-end line numbers, "
+            "unchanged regions, or LEFT-side-only lines) so GitHub would have "
+            "rejected them as inline. Posted here instead so nothing is lost._",
+            "",
+        ]
+        for c in invalid_fallback:
+            line_str = f" (line {c['line']})" if c.get("line") else ""
+            body_parts.append(f"**{c['path']}**{line_str}")
+            body_parts.append(c["body"])
+            body_parts.append("")
+    body = "\n".join(body_parts)
+
+    review_comments = [
+        {
             "path": c["path"],
             "body": f"**[{attribution}]** {c['body']}",
+            "line": c["line"],
+            "side": "RIGHT",
         }
-        if "line" in c and c["line"]:
-            comment["line"] = c["line"]
-            comment["side"] = "RIGHT"
-        review_comments.append(comment)
+        for c in valid_inline
+    ]
 
     payload = {
         "commit_id": commit_id,
-        "body": f"## [{attribution}] Code Review\n\n{summary}",
+        "body": body,
         "event": "COMMENT",
         "comments": review_comments,
     }
@@ -561,8 +646,10 @@ def post_pr_review(
     )
 
     if result.returncode != 0:
-        # If inline comments fail (line number issues), fall back to a single review comment
-        print(f"Warning: Inline comments failed, posting as review body", file=sys.stderr)
+        # Defensive fallback for unexpected failures (network, auth, malformed
+        # JSON, etc.). Inline-anchor 422s are already handled above by
+        # bucketing invalids — this path shouldn't normally fire.
+        print("Warning: review POST failed, retrying as body-only", file=sys.stderr)
         print(f"  gh error: {result.stderr[:200]}", file=sys.stderr)
         fallback_body = f"## [{attribution}] Code Review\n\n{summary}\n\n"
         for c in comments:
@@ -592,8 +679,11 @@ def post_pr_review(
         )
         print("Posted review as summary comment (no inline comments)", file=sys.stderr)
     else:
-        inline_count = len(review_comments)
-        print(f"Posted review with {inline_count} inline comment(s)", file=sys.stderr)
+        print(
+            f"Posted review: {len(valid_inline)} inline, "
+            f"{len(invalid_fallback)} bucketed to summary",
+            file=sys.stderr,
+        )
 
 
 def review_pr(
@@ -629,6 +719,10 @@ def review_pr(
             file=sys.stderr,
         )
         return
+
+    # Capture full filtered diff for anchor validation before truncation —
+    # GitHub validates against the real diff, not what we sent the model.
+    full_diff_for_anchors = diff
 
     # Truncate very large diffs to stay within token limits
     max_diff_chars = 100_000  # ~25K tokens
@@ -669,8 +763,15 @@ def review_pr(
     print(f"\n{summary}\n", file=sys.stderr)
     print(f"  {len(comments)} inline comment(s)", file=sys.stderr)
 
-    # Post to GitHub
-    post_pr_review(pr_number, summary, comments, attribution=provider.name.upper())
+    # Post to GitHub — pass full pre-truncation diff so anchor validation
+    # matches what GitHub sees, not what the model saw.
+    post_pr_review(
+        pr_number,
+        summary,
+        comments,
+        attribution=provider.name.upper(),
+        diff=full_diff_for_anchors,
+    )
     print(f"--> Review posted to PR #{pr_number}", file=sys.stderr)
 
 
