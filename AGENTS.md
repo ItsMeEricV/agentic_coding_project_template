@@ -110,6 +110,7 @@ If your project uses Docker for local development:
 ### Inter-Agent Communication
 
 - **Handovers across sessions or agents:** When a task spans multiple sessions, or when one agent hits a blocker that needs another agent's expertise, document the state in `IMPLEMENTATION_PLAN.md` so the next agent can pick up without re-deriving context.
+- **Second-opinion reviews:** for a non-Claude review of code, a PR, or an architecture decision, invoke the `agent-code-reviewer` skill (wraps `cli/agent_code_reviewer.py`). The skill encodes when a second opinion earns its token cost, which provider to pick (Gemini default, Codex for novel-subsystem architecture critique), and how to weight the reviewer's output against your own conviction. The script gives feedback only — it never writes code.
 - **PR comment attribution.** When more than one AI agent reviews PRs (e.g. Claude + Gemini + Copilot), prepend a bracketed tag to each comment so authors can distinguish them from human reviewers and from each other: `**[CLAUDE]**`, `**[GEMINI]**`, `**[COPILOT]**`. Apply the same convention in inline code-review comments and replies.
 
 ---
