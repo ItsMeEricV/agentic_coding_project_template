@@ -14,10 +14,41 @@
 #   COMPOSE_PROJECT_NAME  — unique Compose project name per worktree
 
 services:
+  # Creates ${WORKTREE_DB} inside the shared db if it doesn't already exist,
+  # then exits. web and studio gate on its successful completion so the first
+  # `up` doesn't fail with "database does not exist" — the infra stack only
+  # initializes POSTGRES_DB at first boot, never per-worktree dbs.
+  # Idempotent: re-runs are no-ops once the database exists.
+  db-init:
+    image: postgres:18
+    networks:
+      - app_shared
+    environment:
+      - PGPASSWORD=postgres
+      - WORKTREE_DB=${WORKTREE_DB:?WORKTREE_DB is required — set it in .env.docker}
+    # The shared db is in a different compose project, so `depends_on` can't
+    # see it — pg_isready loops until the db accepts connections, then runs
+    # the create-if-missing query.
+    command:
+      - sh
+      - -c
+      - |
+        until pg_isready -h db -U postgres -q; do sleep 1; done
+        psql -h db -U postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$$WORKTREE_DB'" | grep -q 1 \
+          || psql -h db -U postgres -c "CREATE DATABASE \"$$WORKTREE_DB\""
+    restart: "no"
+    deploy:
+      resources:
+        limits:
+          memory: 100m
+
   web:
     build:
       context: ./web
       dockerfile: Dockerfile.dev
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
     ports:
       - "${WEB_PORT:?WEB_PORT is required — set it in .env.docker}:3000"
     # Named volumes (not anonymous) for node_modules and the framework build
@@ -59,6 +90,9 @@ services:
     build:
       context: ./web
       dockerfile: Dockerfile.dev
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
     ports:
       - "${STUDIO_PORT:?STUDIO_PORT is required — set it in .env.docker}:5555"
     environment:
