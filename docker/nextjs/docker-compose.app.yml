@@ -36,7 +36,7 @@ services:
         until pg_isready -h db -U postgres -q; do sleep 1; done
         psql -h db -U postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$$WORKTREE_DB'" | grep -q 1 \
           || psql -h db -U postgres -c "CREATE DATABASE \"$$WORKTREE_DB\""
-    restart: "no"
+    restart: 'no'
     deploy:
       resources:
         limits:
@@ -50,7 +50,7 @@ services:
       db-init:
         condition: service_completed_successfully
     ports:
-      - "${WEB_PORT:?WEB_PORT is required — set it in .env.docker}:3000"
+      - '${WEB_PORT:?WEB_PORT is required — set it in .env.docker}:3000'
     # Named volumes (not anonymous) for node_modules and the framework build
     # cache. Anonymous volumes leak: `up --build -V` creates a fresh anonymous
     # volume on every rebuild without cleaning the old one, so repeated worktree
@@ -94,7 +94,7 @@ services:
       db-init:
         condition: service_completed_successfully
     ports:
-      - "${STUDIO_PORT:?STUDIO_PORT is required — set it in .env.docker}:5555"
+      - '${STUDIO_PORT:?STUDIO_PORT is required — set it in .env.docker}:5555'
     environment:
       - DATABASE_URL=postgresql://postgres:postgres@db:5432/${WORKTREE_DB}
     networks:

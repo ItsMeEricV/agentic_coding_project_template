@@ -28,13 +28,15 @@ The trailing `/.` is load-bearing — `nextjs/*` would skip dotfiles like `.env.
 
 ### 2. Substitute placeholders
 
-| Placeholder         | Where                                                | Replace with                                                                                                                            |
-| ------------------- | ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `app_shared`        | `docker-compose.infra.yml`, `docker-compose.app.yml` | `<your-project-slug>_shared` — must match in both files                                                                                 |
-| `app_db`            | `docker-compose.infra.yml` (`container_name`)        | `<your-project-slug>_db` — keeps multiple projects on the same daemon from colliding on container name                                  |
-| `"5432:5432"`       | `docker-compose.infra.yml` (db `ports`)              | Change the **host** side (left of `:`) if 5432 is already in use on this machine — e.g. `"5433:5432"`. Container side must stay `5432`. |
-| `app_dev`           | `docker-compose.infra.yml` (`POSTGRES_DB`)           | Your default DB name                                                                                                                    |
-| `YOUR_NGROK_DOMAIN` | `docker-compose.infra.yml` (ngrok `command`)         | Your reserved ngrok hostname; only needed if enabling the `ngrok` profile                                                               |
+| Placeholder              | Where                                                | Replace with                                                                                                                            |
+| ------------------------ | ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `app_shared`             | `docker-compose.infra.yml`, `docker-compose.app.yml` | `<your-project-slug>_shared` — must match in both files                                                                                 |
+| `app_db`                 | `docker-compose.infra.yml` (`container_name`)        | `<your-project-slug>_db` — keeps multiple projects on the same daemon from colliding on container name                                  |
+| `app_postgres_data`      | `docker-compose.infra.yml` (volume name)             | `<your-project-slug>_postgres_data` — keeps DB volumes isolated per project                                                             |
+| `"5432:5432"`            | `docker-compose.infra.yml` (db `ports`)              | Change the **host** side (left of `:`) if 5432 is already in use on this machine — e.g. `"5433:5432"`. Container side must stay `5432`. |
+| `app_dev`                | `docker-compose.infra.yml` (`POSTGRES_DB`)           | Your default DB name                                                                                                                    |
+| `YOUR_NGROK_DOMAIN`      | `docker-compose.infra.yml` (ngrok `command`)         | Your reserved ngrok hostname; only needed if enabling the `ngrok` profile                                                               |
+| ngrok target port `3000` | `docker-compose.infra.yml` (ngrok `command`)         | The `WEB_PORT` of the worktree you want exposed publicly. Default 3000 assumes the "main" worktree publishes on 3000.                   |
 
 Note: the network alias `db` stays unchanged regardless of `container_name` — the app stack always uses `db:5432` internally via the `aliases:` block on the db service.
 
@@ -101,7 +103,7 @@ studio:
     context: ./web
     dockerfile: Dockerfile.dev
   ports:
-    - "${STUDIO_PORT:?STUDIO_PORT is required — set it in .env.docker}:4983"
+    - '${STUDIO_PORT:?STUDIO_PORT is required — set it in .env.docker}:4983'
   environment:
     - DATABASE_URL=postgresql://postgres:postgres@db:5432/${WORKTREE_DB}
   networks:

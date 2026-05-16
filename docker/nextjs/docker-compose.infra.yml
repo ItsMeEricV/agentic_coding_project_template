@@ -7,10 +7,11 @@
 # Owns the shared Docker network `app_shared`. Every per-worktree app stack
 # joins this network and resolves the database as the hostname `db` via the
 # network alias below — so the db container_name can vary per project without
-# the app stack caring. Substitute `app_shared`, `app_db`, and the host port
-# `5432` for your project's slug at bootstrap (see ../README.md and the
-# new-project-setup skill); otherwise two projects on the same machine will
-# collide on the network name, container name, or host port.
+# the app stack caring. Substitute the four `app_*` placeholders for your
+# project's slug at bootstrap (see ../README.md and the new-project-setup
+# skill): `app_shared` (network), `app_db` (container_name),
+# `app_postgres_data` (volume), and reassign the host port `5432` if needed.
+# Otherwise two projects on the same machine will collide.
 
 services:
   db:
@@ -19,15 +20,15 @@ services:
       dockerfile: Dockerfile.db
     container_name: app_db
     ports:
-      - "5432:5432"
+      - '5432:5432'
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
       - POSTGRES_DB=app_dev
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - app_postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ['CMD-SHELL', 'pg_isready -U postgres']
       interval: 5s
       timeout: 5s
       retries: 5
@@ -55,7 +56,7 @@ services:
     env_file:
       - ./.env.docker
     ports:
-      - "4040:4040"
+      - '4040:4040'
     networks:
       - app_shared
     deploy:
@@ -64,7 +65,7 @@ services:
           memory: 500m
 
 volumes:
-  postgres_data:
+  app_postgres_data:
 
 networks:
   app_shared:
