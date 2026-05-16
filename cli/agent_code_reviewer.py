@@ -201,7 +201,12 @@ class Provider(ABC):
         self, session: str | None = None, ttl_minutes: int = DEFAULT_TTL_MINUTES
     ) -> list[dict]:
         raw = self.load_history_raw()
-        if session and raw.get("session") != session:
+        # Clear on any session mismatch, including the case where the caller
+        # omits --session but the saved history was scoped to one. Without
+        # this, a prior `--session abc` run's entries (a diff, a prompt) would
+        # silently replay into the next un-scoped call and leak back to the
+        # provider.
+        if raw.get("session") != session:
             return []
         entries: list[dict] = raw.get("entries", [])
         if ttl_minutes > 0:
@@ -615,6 +620,16 @@ def review_pr(
             file=sys.stderr,
         )
 
+    # If every changed file was filtered out (docs-only PR, all snapshots, etc.),
+    # exit cleanly. Sending an empty diff to the model would produce hallucinated
+    # comments about content we explicitly meant to skip.
+    if not diff.strip():
+        print(
+            f"--> Nothing to review: all {len(dropped)} changed file(s) match ignore patterns.",
+            file=sys.stderr,
+        )
+        return
+
     # Truncate very large diffs to stay within token limits
     max_diff_chars = 100_000  # ~25K tokens
     if len(diff) > max_diff_chars:
@@ -706,6 +721,31 @@ def main() -> None:
 
     provider: Provider = make_provider(args.provider)
 
+    # Offline operations first — these are pure local file ops and must not
+    # require an API key. A user setting up the script for the first time
+    # may legitimately want to inspect or wipe history before configuring
+    # GEMINI_API_KEY / OPENAI_API_KEY.
+
+    # Show history and exit
+    if args.history:
+        raw = provider.load_history_raw()
+        print(json.dumps(raw, indent=2))
+        return
+
+    # Read from stdin if no message yet (do it now so we know whether
+    # --reset is being used standalone or with a message to send).
+    message: str = args.message
+    if not message and not sys.stdin.isatty():
+        message = sys.stdin.read().strip()
+
+    # Standalone --reset (no message) is also offline — clear and exit
+    # without requiring an API key.
+    if args.reset and not message and not args.pr_number:
+        provider.reset_history()
+        print("History reset.", file=sys.stderr)
+        return
+
+    # Anything past this point will call the provider's API.
     if not provider.api_key():
         print(f"Error: {provider.api_key_env_var()} not set.", file=sys.stderr)
         sys.exit(1)
@@ -717,24 +757,11 @@ def main() -> None:
         review_pr(args.pr_number, provider, model, args.message, ignore_paths=ignore_paths)
         return
 
-    # Show history and exit
-    if args.history:
-        raw = provider.load_history_raw()
-        print(json.dumps(raw, indent=2))
-        return
-
-    # Reset if requested (before message check so --reset works standalone)
+    # --reset combined with a message: reset first, then proceed to send.
     if args.reset:
         provider.reset_history()
 
-    # Read from stdin if no message
-    message: str = args.message
-    if not message and not sys.stdin.isatty():
-        message = sys.stdin.read().strip()
     if not message:
-        if args.reset:
-            print("History reset.", file=sys.stderr)
-            return
         parser.print_help()
         sys.exit(1)
 
