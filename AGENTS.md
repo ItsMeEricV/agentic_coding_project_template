@@ -49,6 +49,7 @@ _Purpose: Define specific roles to prevent 'context bleed' (e.g., a frontend age
 - **Accessibility & i18n:** Adhere to WCAG standards and use internationalization for all strings.
 - **Vendor-agnostic naming.** Use generic names for swappable services: `invokeLlm` not `invokeClaude`, `generateEmbedding` not `generateTitanEmbedding`, `sendEmail` not `sendResend`, `uploadObject` not `uploadToS3`. The model / provider / vendor is a configuration detail, not a code contract — keeping the swap painless requires the codebase to never know which vendor is behind the interface.
 - **Refactoring discipline: do not preserve abstractions just because they exist.** When changing a function or module, reason about its actual failure modes before assuming the existing structure is load-bearing. Pre-existing transactions, retries, or wrapper abstractions are often there because they seemed nice at the time, not because removing them breaks anything. "It was already here" is not a reason to keep code.
+
 ### Error Handling
 
 - **Result Types over Exceptions:** Use a Result type library (e.g., `neverthrow`) to represent operations that can fail. Reserve `try/catch` only for truly exceptional, unrecoverable situations or at system boundaries (e.g., Server Actions that must throw to communicate errors to the framework runtime).
@@ -57,7 +58,6 @@ _Purpose: Define specific roles to prevent 'context bleed' (e.g., a frontend age
 ### Security & Logging Hygiene
 
 - **SSRF allowlists: parse the URL, match on the hostname.** Never regex-match the full URL when validating a redirect target or fetch target. Userinfo, query, fragment, and path segments are trivially weaponizable against full-URL regexes.
-
   - **Good:** `const u = new URL(input); if (!ALLOWED_HOSTS.has(u.hostname)) throw new Error("blocked");`
   - **Bad:** `if (/trusted\.example/.test(input)) { fetch(input); }` — `https://evil.example?@trusted.example` slips right through.
 
@@ -68,7 +68,6 @@ _Purpose: Define specific roles to prevent 'context bleed' (e.g., a frontend age
 ### Database & Migrations
 
 - **Default to UUIDv7 for UUID primary keys.** UUIDv7 embeds a millisecond timestamp prefix, so inserts cluster to the right edge of the B-tree — the same locality property that makes serial integer keys cheap, without giving up global uniqueness. Reach for UUIDv4 only when unguessability dominates and you accept the index-locality cost.
-
   - **Good (Postgres + ORM):** `id String @id @default(uuid(7))`
   - **Bad:** `id String @id @default(uuid())` — random v4 scatters inserts across the B-tree, inflating index size and write amplification on hot tables.
 
