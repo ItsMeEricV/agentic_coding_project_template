@@ -1,20 +1,23 @@
 # Long-lived, machine-wide infra. Bring up ONCE per machine (not per worktree):
-#   docker compose -f docker-compose.infra.yml up -d
+#   docker compose -f docker-compose.infra.yml --env-file .env.docker up -d
 #
-# Enable optional services by setting COMPOSE_PROFILES before `up`:
-#   COMPOSE_PROFILES=ngrok docker compose -f docker-compose.infra.yml up -d
+# The --env-file flag is required so COMPOSE_PROFILES (and NGROK_AUTHTOKEN, if
+# enabling ngrok) are loaded. Per-worktree vars are harmlessly ignored here.
 #
-# Owns the shared Docker network `app_shared` — every per-worktree app stack
-# joins this network to reach the db container. Substitute `app_shared` for
-# your project's slug at bootstrap (see ../README.md and the new-project-setup
-# skill); otherwise two projects on the same machine will collide on this name.
+# Owns the shared Docker network `app_shared`. Every per-worktree app stack
+# joins this network and resolves the database as the hostname `db` via the
+# network alias below — so the db container_name can vary per project without
+# the app stack caring. Substitute `app_shared`, `app_db`, and the host port
+# `5432` for your project's slug at bootstrap (see ../README.md and the
+# new-project-setup skill); otherwise two projects on the same machine will
+# collide on the network name, container name, or host port.
 
 services:
   db:
     build:
       context: .
       dockerfile: Dockerfile.db
-    container_name: db
+    container_name: app_db
     ports:
       - "5432:5432"
     environment:
@@ -29,7 +32,12 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - app_shared
+      app_shared:
+        # Stable hostname `db` for any container on the shared network,
+        # independent of container_name. Lets two projects use distinct
+        # container names while their app stacks still resolve `db:5432`.
+        aliases:
+          - db
     deploy:
       resources:
         limits:

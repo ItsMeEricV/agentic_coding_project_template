@@ -21,18 +21,22 @@ web/
 ### 1. Copy the stamp to your project root
 
 ```bash
-cp -r path/to/agentic_coding_project_template/docker/nextjs/* .
+cp -a path/to/agentic_coding_project_template/docker/nextjs/. .
 ```
 
-This puts the compose files at the project root, the DB Dockerfile next to them, and the dev Dockerfile under `web/`.
+The trailing `/.` is load-bearing — `nextjs/*` would skip dotfiles like `.env.docker.example` and `web/.dockerignore`. `cp -a` preserves the directory layout (compose files at the project root, the DB Dockerfile next to them, the dev Dockerfile under `web/`).
 
 ### 2. Substitute placeholders
 
-| Placeholder         | Where                                                | Replace with                                                              |
-| ------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------- |
-| `app_shared`        | `docker-compose.infra.yml`, `docker-compose.app.yml` | `<your-project-slug>_shared` — must match in both files                   |
-| `app_dev`           | `docker-compose.infra.yml` (`POSTGRES_DB`)           | Your default DB name                                                      |
-| `YOUR_NGROK_DOMAIN` | `docker-compose.infra.yml` (ngrok `command`)         | Your reserved ngrok hostname; only needed if enabling the `ngrok` profile |
+| Placeholder         | Where                                                | Replace with                                                                                                                            |
+| ------------------- | ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `app_shared`        | `docker-compose.infra.yml`, `docker-compose.app.yml` | `<your-project-slug>_shared` — must match in both files                                                                                 |
+| `app_db`            | `docker-compose.infra.yml` (`container_name`)        | `<your-project-slug>_db` — keeps multiple projects on the same daemon from colliding on container name                                  |
+| `"5432:5432"`       | `docker-compose.infra.yml` (db `ports`)              | Change the **host** side (left of `:`) if 5432 is already in use on this machine — e.g. `"5433:5432"`. Container side must stay `5432`. |
+| `app_dev`           | `docker-compose.infra.yml` (`POSTGRES_DB`)           | Your default DB name                                                                                                                    |
+| `YOUR_NGROK_DOMAIN` | `docker-compose.infra.yml` (ngrok `command`)         | Your reserved ngrok hostname; only needed if enabling the `ngrok` profile                                                               |
+
+Note: the network alias `db` stays unchanged regardless of `container_name` — the app stack always uses `db:5432` internally via the `aliases:` block on the db service.
 
 ### 3. Configure your worktree
 
@@ -45,8 +49,10 @@ cp .env.docker.example .env.docker
 ### 4. Bring it up
 
 ```bash
-# Once per machine — shared infra
-docker compose -f docker-compose.infra.yml up -d
+# Once per machine — shared infra. The --env-file flag is required so
+# COMPOSE_PROFILES (and NGROK_AUTHTOKEN, if enabling ngrok) is read; per-worktree
+# vars in .env.docker are harmlessly ignored by infra services.
+docker compose -f docker-compose.infra.yml --env-file .env.docker up -d
 
 # Once per worktree — app stack
 docker compose -f docker-compose.app.yml --env-file .env.docker up

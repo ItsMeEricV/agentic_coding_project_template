@@ -27,16 +27,20 @@ This skill captures the fork-time questions and the exact substitutions each ans
 
 Ask the questions below in order. After all answers are in, perform the substitutions in one batch and surface the diff via `git diff` before any commit.
 
-### Q1: Project slug (BLOCKING)
+### Q1: Project slug + host-port collision (BLOCKING)
 
-Ask: _"What's the project slug? It namespaces the shared Docker network and per-worktree containers — needed to avoid collisions with other projects on this machine. Lowercase, hyphen- or underscore-separated. Example: `taskbird`, `analytics_pipeline`."_
+Ask: _"What's the project slug? It namespaces the shared Docker network, the db container name, and per-worktree containers — needed to avoid collisions with other projects on this machine. Lowercase, hyphen- or underscore-separated. Example: `taskbird`, `analytics_pipeline`."_
+
+Then ask: _"Will any other project on this machine also publish Postgres on host port 5432? If yes, pick an alternate host port for this project's db (e.g. 5433, 5434). Default is 5432."_
 
 Substitutions:
 
 - `docker-compose.infra.yml` — `app_shared` → `<slug>_shared` (network name _and_ the `name:` field)
+- `docker-compose.infra.yml` — `container_name: app_db` → `container_name: <slug>_db` (the network alias `db` stays unchanged, so the app stack's `DATABASE_URL` keeps using `db:5432` regardless)
+- `docker-compose.infra.yml` — host port in `"5432:5432"` → `"<host-port>:5432"` (only the left side; the container always listens on 5432 internally)
+- `docker-compose.infra.yml` — `POSTGRES_DB` from `app_dev` → `<slug>_dev` (the catalog database, not the worktree one)
 - `docker-compose.app.yml` — `app_shared` → `<slug>_shared` (network name _and_ the `name:` field)
-- `.env.docker.example` — update the `COMPOSE_PROJECT_NAME` default from `app-main` to `<slug>-main`, and `WORKTREE_DB` from `app_dev_main` to `<slug>_dev_main`
-- `docker-compose.infra.yml` — `POSTGRES_DB` from `app_dev` to `<slug>_dev` (the catalog database, not the worktree one)
+- `.env.docker.example` — `COMPOSE_PROJECT_NAME` default from `app-main` → `<slug>-main`, `WORKTREE_DB` from `app_dev_main` → `<slug>_dev_main`
 
 ### Q2: ORM choice (BLOCKING)
 
@@ -84,16 +88,21 @@ If lowering: substitute the `memory:` line in `docker-compose.app.yml` (web) —
 
 1. Run `git diff` and show the user every change you made.
 2. Prompt: _"Run `cp .env.docker.example .env.docker` and edit per-worktree values (`WEB_PORT`, `STUDIO_PORT`, `WORKTREE_DB`, `COMPOSE_PROJECT_NAME`) before bringing the stack up."_
-3. Recommend the bring-up order: `docker compose -f docker-compose.infra.yml up -d` once per machine, then `docker compose -f docker-compose.app.yml --env-file .env.docker up` per worktree.
+3. Recommend the bring-up order:
+   - Once per machine: `docker compose -f docker-compose.infra.yml --env-file .env.docker up -d` (the `--env-file` is required so `COMPOSE_PROFILES` and `NGROK_AUTHTOKEN` are read; the per-worktree vars are harmlessly ignored by infra services).
+   - Once per worktree: `docker compose -f docker-compose.app.yml --env-file .env.docker up`.
+   - On first `up` of the app stack, the `db-init` service creates the worktree database inside the shared Postgres and exits; `web` and `studio` are gated on its successful completion.
 4. Do **not** run `docker compose up` yourself unless the user explicitly asks. Long-running processes and "is this healthy?" judgement belong to the user on first boot.
 
 ## Common mistakes
 
-| Mistake                                                 | Fix                                                                                                                                     |
-| ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| Substituted `app_shared` in only one file               | The two compose files must agree exactly — name mismatch means the app stack can't join the infra network.                              |
-| Replaced only some ORM fences                           | An app.yml `studio:` running Prisma against a Drizzle codebase fails on `up`. Replace _all_ fences in _both_ files.                     |
-| Skipped Q4 and added an extension later                 | `down -v` + image rebuild = volume loss. Bring this up at bootstrap.                                                                    |
-| Forgot ngrok target port                                | ngrok's `host.docker.internal:3000` only forwards to the worktree publishing `WEB_PORT=3000`. Document which worktree that is.          |
-| Edited `.env.docker.example` instead of `.env.docker`   | `.example` is the source of truth for which vars _exist_; the real one is per-worktree, gitignored, and is what Compose actually reads. |
-| Ran `docker compose restart` to pick up env-var changes | `restart` does not re-read env files. Use `up -d` (with `--build -V` if dependencies changed).                                          |
+| Mistake                                                 | Fix                                                                                                                                                                      |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Substituted `app_shared` in only one file               | The two compose files must agree exactly — name mismatch means the app stack can't join the infra network.                                                               |
+| Substituted network but forgot `container_name` / port  | Two projects on the same machine collide on `container_name: app_db` or host port 5432. The network alias `db` stays stable; only the container name and host port move. |
+| Replaced only some ORM fences                           | An app.yml `studio:` running Prisma against a Drizzle codebase fails on `up`. Replace _all_ fences in _both_ files.                                                      |
+| Skipped Q4 and added an extension later                 | `down -v` + image rebuild = volume loss. Bring this up at bootstrap.                                                                                                     |
+| Forgot ngrok target port                                | ngrok's `host.docker.internal:3000` only forwards to the worktree publishing `WEB_PORT=3000`. Document which worktree that is.                                           |
+| Edited `.env.docker.example` instead of `.env.docker`   | `.example` is the source of truth for which vars _exist_; the real one is per-worktree, gitignored, and is what Compose actually reads.                                  |
+| Ran infra `up` without `--env-file .env.docker`         | `COMPOSE_PROFILES=ngrok` in `.env.docker` is silently ignored without the flag, so ngrok stays disabled even when the user thought they enabled it.                      |
+| Ran `docker compose restart` to pick up env-var changes | `restart` does not re-read env files. Use `up -d` (with `--build -V` if dependencies changed).                                                                           |
