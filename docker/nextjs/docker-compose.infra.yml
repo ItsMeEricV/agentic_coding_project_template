@@ -1,0 +1,72 @@
+# Long-lived, machine-wide infra. Bring up ONCE per machine (not per worktree):
+#   docker compose -f docker-compose.infra.yml --env-file .env.docker up -d
+#
+# The --env-file flag is required so COMPOSE_PROFILES (and NGROK_AUTHTOKEN, if
+# enabling ngrok) are loaded. Per-worktree vars are harmlessly ignored here.
+#
+# Owns the shared Docker network `app_shared`. Every per-worktree app stack
+# joins this network and resolves the database as the hostname `db` via the
+# network alias below — so the db container_name can vary per project without
+# the app stack caring. Substitute the four `app_*` placeholders for your
+# project's slug at bootstrap (see ../README.md and the new-project-setup
+# skill): `app_shared` (network), `app_db` (container_name),
+# `app_postgres_data` (volume), and reassign the host port `5432` if needed.
+# Otherwise two projects on the same machine will collide.
+
+services:
+  db:
+    build:
+      context: .
+      dockerfile: Dockerfile.db
+    container_name: app_db
+    ports:
+      - '5432:5432'
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=app_dev
+    volumes:
+      - app_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      app_shared:
+        # Stable hostname `db` for any container on the shared network,
+        # independent of container_name. Lets two projects use distinct
+        # container names while their app stacks still resolve `db:5432`.
+        aliases:
+          - db
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+  ngrok:
+    profiles: [ngrok]
+    image: ngrok/ngrok:latest
+    # Tunnels traffic from your reserved ngrok domain to whichever worktree is
+    # publishing host port 3000. Only one worktree at a time gets the public URL
+    # (the one that set WEB_PORT=3000); other worktrees still run locally, just
+    # unexposed. Replace YOUR_NGROK_DOMAIN with your reserved ngrok hostname.
+    command: http host.docker.internal:3000 --domain YOUR_NGROK_DOMAIN
+    # NGROK_AUTHTOKEN must be set in .env.docker.
+    env_file:
+      - ./.env.docker
+    ports:
+      - '4040:4040'
+    networks:
+      - app_shared
+    deploy:
+      resources:
+        limits:
+          memory: 500m
+
+volumes:
+  app_postgres_data:
+
+networks:
+  app_shared:
+    name: app_shared

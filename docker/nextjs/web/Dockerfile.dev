@@ -1,0 +1,28 @@
+FROM node:24-alpine
+
+WORKDIR /app
+
+COPY package*.json ./
+
+# --- ORM: Prisma --- (swap block for Drizzle / other — see ../README.md)
+COPY prisma ./prisma/
+COPY prisma.config.ts ./
+# --- /ORM ---
+
+RUN npm cache clean --force && npm install
+
+COPY . .
+
+# --- ORM: Prisma ---
+# `prisma generate` needs a syntactically valid DATABASE_URL, but does not
+# connect — the dummy URL is fine. Generated client is baked into the image so
+# the dev server starts without a runtime codegen step.
+RUN DATABASE_URL="postgresql://dummy:dummy@localhost:5432/dummy" npx prisma generate
+# --- /ORM ---
+
+EXPOSE 3000
+
+# --- ORM: Prisma ---
+# `migrate deploy` applies pending migrations at container start, then dev server.
+CMD ["sh", "-c", "npx prisma migrate deploy && npm run dev"]
+# --- /ORM ---

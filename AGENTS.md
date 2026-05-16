@@ -6,40 +6,12 @@ This document defines the **"How"** and the **"Who."** It acts as the system pro
 
 If you are an AI assistant (like Gemini or Claude) reading this file:
 
-1. **Analyze the Prompt & Target Files:** Before starting any task, determine which persona is appropriate based on the file extensions and context.
-2. **Acknowledge Rules:** Acknowledge these rules by summarizing the current [Tech Stack] from `ARCHITECTURE.md` before starting a task.
-3. **Strict Adherence:** All technical standards defined here are the absolute source of truth.
+1. **Acknowledge Rules:** Acknowledge these rules by summarizing the current [Tech Stack] from `ARCHITECTURE.md` before starting a task.
+2. **Strict Adherence:** All technical standards defined here are the absolute source of truth.
 
 ---
 
-## 1. Personas & Boundaries
-
-_Purpose: Define specific roles to prevent 'context bleed' (e.g., a frontend agent accidentally modifying database schemas)._
-
-### Persona: [Staff Frontend Architect]
-
-- **Domain:** TypeScript, Next.js (App Router), React, Tailwind CSS.
-- **Responsibilities:** Responsive UI, client-side state, accessibility, and performance.
-- **Boundary:** Strictly web frontend. Does not touch backend logic or database schemas.
-- **Success Metric:** 100 Lighthouse scores and zero accessibility violations.
-
-### Persona: [Staff Backend Architect]
-
-- **Domain:** Node.js, PostgreSQL, API Design.
-- **Responsibilities:** Database schema, server-side logic, and API contract definition.
-- **Boundary:** Strictly backend structure. Does not touch frontend presentation logic (CSS/Tailwind).
-- **Success Metric:** Sub-100ms API response times.
-
-### Persona: [Staff Quality Engineer]
-
-- **Domain:** End-to-end testing, performance profiling, and automated QA.
-- **Responsibilities:** Cross-functional code review and test authoring.
-- **Boundary:** Does not commit unreviewed feature code.
-- **Success Metric:** Zero critical bugs in production.
-
----
-
-## 2. Global Engineering Standards (DOs)
+## 1. Global Engineering Standards (DOs)
 
 ### Core Standards
 
@@ -49,6 +21,7 @@ _Purpose: Define specific roles to prevent 'context bleed' (e.g., a frontend age
 - **Accessibility & i18n:** Adhere to WCAG standards and use internationalization for all strings.
 - **Vendor-agnostic naming.** Use generic names for swappable services: `invokeLlm` not `invokeClaude`, `generateEmbedding` not `generateTitanEmbedding`, `sendEmail` not `sendResend`, `uploadObject` not `uploadToS3`. The model / provider / vendor is a configuration detail, not a code contract — keeping the swap painless requires the codebase to never know which vendor is behind the interface.
 - **Refactoring discipline: do not preserve abstractions just because they exist.** When changing a function or module, reason about its actual failure modes before assuming the existing structure is load-bearing. Pre-existing transactions, retries, or wrapper abstractions are often there because they seemed nice at the time, not because removing them breaks anything. "It was already here" is not a reason to keep code.
+
 ### Error Handling
 
 - **Result Types over Exceptions:** Use a Result type library (e.g., `neverthrow`) to represent operations that can fail. Reserve `try/catch` only for truly exceptional, unrecoverable situations or at system boundaries (e.g., Server Actions that must throw to communicate errors to the framework runtime).
@@ -57,7 +30,6 @@ _Purpose: Define specific roles to prevent 'context bleed' (e.g., a frontend age
 ### Security & Logging Hygiene
 
 - **SSRF allowlists: parse the URL, match on the hostname.** Never regex-match the full URL when validating a redirect target or fetch target. Userinfo, query, fragment, and path segments are trivially weaponizable against full-URL regexes.
-
   - **Good:** `const u = new URL(input); if (!ALLOWED_HOSTS.has(u.hostname)) throw new Error("blocked");`
   - **Bad:** `if (/trusted\.example/.test(input)) { fetch(input); }` — `https://evil.example?@trusted.example` slips right through.
 
@@ -68,7 +40,6 @@ _Purpose: Define specific roles to prevent 'context bleed' (e.g., a frontend age
 ### Database & Migrations
 
 - **Default to UUIDv7 for UUID primary keys.** UUIDv7 embeds a millisecond timestamp prefix, so inserts cluster to the right edge of the B-tree — the same locality property that makes serial integer keys cheap, without giving up global uniqueness. Reach for UUIDv4 only when unguessability dominates and you accept the index-locality cost.
-
   - **Good (Postgres + ORM):** `id String @id @default(uuid(7))`
   - **Bad:** `id String @id @default(uuid())` — random v4 scatters inserts across the B-tree, inflating index size and write amplification on hot tables.
 
@@ -120,6 +91,7 @@ _Note: If your project uses a monorepo or subdirectory structure, ensure you run
 
 If your project uses Docker for local development:
 
+- **Before editing `docker/`:** invoke the `new-project-setup` skill. It walks through fork-time decisions (project slug, ORM choice, ngrok, PG extensions) and substitutes placeholders in one batch. Editing files directly causes silent failures — orphaned ORM scaffolding and shared-network collisions between projects.
 - **Hot-reload:** Use volume mounts so source file changes are picked up without rebuilds.
 - **When to rebuild:** After changing `package.json`/lock files, `Dockerfile`, `docker-compose.yml`, or ORM schema files.
 - **Anonymous volumes:** When rebuilding after dependency changes, use `docker compose up -d --build -V <service>` to recreate anonymous volumes (e.g., `node_modules`). Without `-V`, Docker reuses stale volumes and new packages will be missing.
@@ -127,7 +99,7 @@ If your project uses Docker for local development:
 
 ---
 
-## 3. Git Workflow & Communication
+## 2. Git Workflow & Communication
 
 ### Commit Standards
 
@@ -137,13 +109,12 @@ If your project uses Docker for local development:
 
 ### Inter-Agent Communication
 
-- **Handovers:** When a persona hits a blocker requiring another's expertise, document it in the `IMPLEMENTATION_PLAN.md`.
-- **Intent Sync:** Sync intent between personas before starting cross-boundary tasks.
+- **Handovers across sessions or agents:** When a task spans multiple sessions, or when one agent hits a blocker that needs another agent's expertise, document the state in `IMPLEMENTATION_PLAN.md` so the next agent can pick up without re-deriving context.
 - **PR comment attribution.** When more than one AI agent reviews PRs (e.g. Claude + Gemini + Copilot), prepend a bracketed tag to each comment so authors can distinguish them from human reviewers and from each other: `**[CLAUDE]**`, `**[GEMINI]**`, `**[COPILOT]**`. Apply the same convention in inline code-review comments and replies.
 
 ---
 
-## 4. Global Constraints & Anti-Patterns (DO NOTs)
+## 3. Global Constraints & Anti-Patterns (DO NOTs)
 
 - **No Shortcuts:** Do not skip accessibility, i18n, or type safety for speed.
 - **No Hardcoding:** Never hardcode strings, colors, or secrets.
