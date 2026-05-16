@@ -6,7 +6,11 @@ argument-hint: 'What will the next session be used for?'
 
 Write a handoff document summarising the current conversation so a fresh agent can continue the work.
 
-Save it to a path produced by `mktemp -t handoff-$(date +%Y%m%d)-XXXXXX.md`. `mktemp` creates the file empty, and the `Write` tool requires a file to be read first when it exists, so call `Read` on the returned path before `Write`.
+Pick a short kebab-case slug (2–5 words) describing the handoff's focus, derived from the user's argument or the conversation. Save the doc to:
+
+    /tmp/handoff-$(date +%Y%m%d)-<slug>.md
+
+The `Write` tool creates the file when the path does not exist, so no prior `Read` is needed. Example: `/tmp/handoff-20260516-fitness-tracker-cli-migration.md`. The date prefix keeps multiple handoffs chronologically sortable; the slug makes the file's purpose obvious from `ls`.
 
 Suggest the skills to be used, if any, by the next session.
 
