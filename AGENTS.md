@@ -6,40 +6,12 @@ This document defines the **"How"** and the **"Who."** It acts as the system pro
 
 If you are an AI assistant (like Gemini or Claude) reading this file:
 
-1. **Analyze the Prompt & Target Files:** Before starting any task, determine which persona is appropriate based on the file extensions and context.
-2. **Acknowledge Rules:** Acknowledge these rules by summarizing the current [Tech Stack] from `ARCHITECTURE.md` before starting a task.
-3. **Strict Adherence:** All technical standards defined here are the absolute source of truth.
+1. **Acknowledge Rules:** Acknowledge these rules by summarizing the current [Tech Stack] from `ARCHITECTURE.md` before starting a task.
+2. **Strict Adherence:** All technical standards defined here are the absolute source of truth.
 
 ---
 
-## 1. Personas & Boundaries
-
-_Purpose: Define specific roles to prevent 'context bleed' (e.g., a frontend agent accidentally modifying database schemas)._
-
-### Persona: [Staff Frontend Architect]
-
-- **Domain:** TypeScript, Next.js (App Router), React, Tailwind CSS.
-- **Responsibilities:** Responsive UI, client-side state, accessibility, and performance.
-- **Boundary:** Strictly web frontend. Does not touch backend logic or database schemas.
-- **Success Metric:** 100 Lighthouse scores and zero accessibility violations.
-
-### Persona: [Staff Backend Architect]
-
-- **Domain:** Node.js, PostgreSQL, API Design.
-- **Responsibilities:** Database schema, server-side logic, and API contract definition.
-- **Boundary:** Strictly backend structure. Does not touch frontend presentation logic (CSS/Tailwind).
-- **Success Metric:** Sub-100ms API response times.
-
-### Persona: [Staff Quality Engineer]
-
-- **Domain:** End-to-end testing, performance profiling, and automated QA.
-- **Responsibilities:** Cross-functional code review and test authoring.
-- **Boundary:** Does not commit unreviewed feature code.
-- **Success Metric:** Zero critical bugs in production.
-
----
-
-## 2. Global Engineering Standards (DOs)
+## 1. Global Engineering Standards (DOs)
 
 ### Core Standards
 
@@ -127,7 +99,7 @@ If your project uses Docker for local development:
 
 ---
 
-## 3. Git Workflow & Communication
+## 2. Git Workflow & Communication
 
 ### Commit Standards
 
@@ -137,13 +109,12 @@ If your project uses Docker for local development:
 
 ### Inter-Agent Communication
 
-- **Handovers:** When a persona hits a blocker requiring another's expertise, document it in the `IMPLEMENTATION_PLAN.md`.
-- **Intent Sync:** Sync intent between personas before starting cross-boundary tasks.
+- **Handovers across sessions or agents:** When a task spans multiple sessions, or when one agent hits a blocker that needs another agent's expertise, document the state in `IMPLEMENTATION_PLAN.md` so the next agent can pick up without re-deriving context.
 - **PR comment attribution.** When more than one AI agent reviews PRs (e.g. Claude + Gemini + Copilot), prepend a bracketed tag to each comment so authors can distinguish them from human reviewers and from each other: `**[CLAUDE]**`, `**[GEMINI]**`, `**[COPILOT]**`. Apply the same convention in inline code-review comments and replies.
 
 ---
 
-## 4. Global Constraints & Anti-Patterns (DO NOTs)
+## 3. Global Constraints & Anti-Patterns (DO NOTs)
 
 - **No Shortcuts:** Do not skip accessibility, i18n, or type safety for speed.
 - **No Hardcoding:** Never hardcode strings, colors, or secrets.
