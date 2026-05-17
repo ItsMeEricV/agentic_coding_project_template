@@ -119,11 +119,17 @@ DEFAULT_SYSTEM_PROMPT: str = (
 PR_REVIEW_SYSTEM_PROMPT: str = (
     "You are a staff-level software architect performing an inline code review on a GitHub PR diff. "
     "Be direct and concise. Focus on bugs, edge cases, performance, security, and cost.\n\n"
+    "Each diff line inside a hunk is prefixed with `L<lineno>` indicating its line number in the "
+    "NEW file (right side of the diff). Use that exact number in the `line` field — do NOT compute "
+    "line numbers yourself by counting hunk lines.\n\n"
     "IMPORTANT: Respond with a JSON object containing:\n"
     '- "summary": A 2-3 sentence overall assessment\n'
     '- "comments": An array of inline comments, each with:\n'
     '  - "path": The file path (from the diff header)\n'
-    '  - "line": The line number in the NEW file (right side of diff, lines starting with +)\n'
+    '  - "line": The line number in the NEW file (the `L<lineno>` value of the targeted line)\n'
+    '  - "code_excerpt": A VERBATIM copy of the targeted line\'s code (without the `L<lineno>` '
+    "prefix and without the diff marker `+`/space; preserve leading indentation and the rest of "
+    "the line exactly). This is used to snap your comment to the right line if `line` is off.\n"
     '  - "body": The review comment (use markdown). Prefix with severity: 🔴 CRITICAL, 🟠 HIGH, 🟡 MEDIUM, 🔵 LOW\n\n'
     "Only comment on lines that are ADDED or CHANGED (+ lines in the diff). "
     "Do NOT comment on deleted lines or unchanged context lines. "
@@ -563,6 +569,83 @@ def _parse_diff_anchorable_lines(diff: str) -> dict[str, set[int]]:
     return result
 
 
+def annotate_diff_with_line_numbers(diff: str) -> str:
+    """Prefix every in-hunk new-file line with `L<lineno> ` so the reviewing
+    model can read line numbers directly off each line instead of counting
+    hunk offsets (which it gets wrong).
+
+    Additions (`+`) and context (` `) get the prefix using their new-file
+    line number. Deletions (`-`) and other lines (headers, hunk markers,
+    `\\ No newline...`) pass through unchanged.
+    """
+    out: list[str] = []
+    current_new_line = 0
+    in_hunk = False
+    for raw in diff.splitlines():
+        if re.match(r"^diff --git a/\S+ b/(\S+)", raw):
+            in_hunk = False
+            out.append(raw)
+            continue
+        m = re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@", raw)
+        if m:
+            current_new_line = int(m.group(1))
+            in_hunk = True
+            out.append(raw)
+            continue
+        if not in_hunk:
+            out.append(raw)
+            continue
+        if raw.startswith("+") and not raw.startswith("+++"):
+            out.append(f"L{current_new_line} {raw}")
+            current_new_line += 1
+        elif raw.startswith(" "):
+            out.append(f"L{current_new_line} {raw}")
+            current_new_line += 1
+        else:
+            out.append(raw)
+    return "\n".join(out)
+
+
+def _build_line_content_index(diff: str) -> dict[str, dict[str, list[int]]]:
+    """Map `{path: {line_content: [new_file_line_numbers]}}` for RIGHT-side
+    lines (additions + context). Used by `post_pr_review` to snap a comment's
+    `line` to the actual file line by matching the model-provided
+    `code_excerpt` against this index.
+
+    `line_content` is the verbatim text after the diff marker — for `+ foo`
+    we index `"foo"`; for ` foo` (context) we also index `"foo"`. Deletions
+    are not indexed (LEFT-side only)."""
+    result: dict[str, dict[str, list[int]]] = {}
+    current_path: str | None = None
+    current_new_line = 0
+    in_hunk = False
+    for raw in diff.splitlines():
+        m = re.match(r"^diff --git a/\S+ b/(\S+)", raw)
+        if m:
+            current_path = m.group(1)
+            result.setdefault(current_path, {})
+            in_hunk = False
+            continue
+        if current_path is None:
+            continue
+        m = re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@", raw)
+        if m:
+            current_new_line = int(m.group(1))
+            in_hunk = True
+            continue
+        if not in_hunk:
+            continue
+        if raw.startswith("+") and not raw.startswith("+++"):
+            content = raw[1:]
+            result[current_path].setdefault(content, []).append(current_new_line)
+            current_new_line += 1
+        elif raw.startswith(" "):
+            content = raw[1:]
+            result[current_path].setdefault(content, []).append(current_new_line)
+            current_new_line += 1
+    return result
+
+
 def post_pr_review(
     pr_number: str,
     summary: str,
@@ -593,12 +676,29 @@ def post_pr_review(
             file=sys.stderr,
         )
     anchorable = _parse_diff_anchorable_lines(diff) if diff else {}
+    content_index = _build_line_content_index(diff) if diff else {}
 
     valid_inline: list[dict] = []
     invalid_fallback: list[dict] = []
     for c in comments:
         line = c.get("line")
         path = c.get("path", "")
+        # Snap to excerpt: if the model returned a code_excerpt that appears
+        # exactly once in the file's anchorable lines, trust the excerpt over
+        # the (often-miscounted) line number. Models reliably copy text more
+        # accurately than they count hunk offsets.
+        excerpt = c.get("code_excerpt")
+        if excerpt and path in content_index:
+            matches = content_index[path].get(excerpt, [])
+            if len(matches) == 1:
+                snapped = matches[0]
+                if snapped != line:
+                    print(
+                        f"  snapped {path}: line {line} -> {snapped} via code_excerpt",
+                        file=sys.stderr,
+                    )
+                    c["line"] = snapped
+                    line = snapped
         if line and path in anchorable and line in anchorable[path]:
             valid_inline.append(c)
         else:
@@ -618,6 +718,8 @@ def post_pr_review(
         for c in invalid_fallback:
             line_str = f" (line {c['line']})" if c.get("line") else ""
             body_parts.append(f"**{c['path']}**{line_str}")
+            if c.get("code_excerpt"):
+                body_parts.append(f"> `{c['code_excerpt']}`")
             body_parts.append(c["body"])
             body_parts.append("")
     body = "\n".join(body_parts)
@@ -745,7 +847,8 @@ def review_pr(
         diff = diff[:max_diff_chars] + "\n\n... [diff truncated] ..."
         print(f"--> Diff truncated to {max_diff_chars} chars", file=sys.stderr)
 
-    prompt = f"Review this PR diff:\n\n```diff\n{diff}\n```"
+    annotated_diff = annotate_diff_with_line_numbers(diff)
+    prompt = f"Review this PR diff:\n\n```diff\n{annotated_diff}\n```"
     if extra_instructions:
         prompt = f"{extra_instructions}\n\n{prompt}"
 
