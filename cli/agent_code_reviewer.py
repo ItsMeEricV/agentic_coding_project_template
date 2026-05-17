@@ -122,6 +122,10 @@ PR_REVIEW_SYSTEM_PROMPT: str = (
     "Each diff line inside a hunk is prefixed with `L<lineno>` indicating its line number in the "
     "NEW file (right side of the diff). Use that exact number in the `line` field — do NOT compute "
     "line numbers yourself by counting hunk lines.\n\n"
+    "The diff may be preceded by a <pr_description>...</pr_description> block containing the "
+    "pull request title and description written by the PR author. This is the author's framing "
+    "of their own change — use it for context (intent, design decisions, scope), but don't trust "
+    "it unconditionally. Push back on issues you find even if the description says otherwise.\n\n"
     "IMPORTANT: Respond with a JSON object containing:\n"
     '- "summary": A 2-3 sentence overall assessment\n'
     '- "comments": An array of inline comments, each with:\n'
@@ -848,7 +852,23 @@ def review_pr(
         print(f"--> Diff truncated to {max_diff_chars} chars", file=sys.stderr)
 
     annotated_diff = annotate_diff_with_line_numbers(diff)
-    prompt = f"Review this PR diff:\n\n```diff\n{annotated_diff}\n```"
+
+    # Give the reviewer the author's framing (intent, scope, design choices)
+    # alongside the diff. System prompt tells the model to treat it as the
+    # author's view, not ground truth.
+    pr_info = get_pr_info(pr_number)
+    pr_title = pr_info.get("title", "").strip()
+    pr_body = pr_info.get("body", "").strip()
+    context_block = ""
+    if pr_title or pr_body:
+        context_block = (
+            "<pr_description>\n"
+            f"Title: {pr_title}\n\n"
+            f"{pr_body}\n"
+            "</pr_description>\n\n"
+        )
+
+    prompt = f"{context_block}Review this PR diff:\n\n```diff\n{annotated_diff}\n```"
     if extra_instructions:
         prompt = f"{extra_instructions}\n\n{prompt}"
 
