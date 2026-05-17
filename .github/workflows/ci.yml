@@ -46,3 +46,18 @@ jobs:
       # Uncomment once web/ has a test suite (vitest, jest, playwright unit).
       # - name: Tests
       #   run: npm test
+
+  python-tests:
+    # Runs in the template repo AND forks — the cli/ Python helpers ship with
+    # the template and have stdlib-only unit tests, so there's no install
+    # step and no per-fork dependency on web/.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run unittest suite
+        run: python -m unittest discover -s cli -p 'test_*.py' -v
