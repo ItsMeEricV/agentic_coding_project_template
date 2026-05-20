@@ -22,6 +22,7 @@ Back-port abstracted lessons from a working project into the master template at 
 | `AGENTS.md`                                      | `AGENTS.md`               | Sync abstracted rules. Hard cap 200 lines.                              |
 | `ARCHITECTURE.md`                                | `ARCHITECTURE.md`         | Sync structural patterns. Drop concrete service names and diagrams.     |
 | `SPEC.md`                                        | `SPEC.md`                 | Sync requirement-writing pedagogy only, not the actual requirements.    |
+| `KNOWLEDGE.md`                                   | `KNOWLEDGE.md`            | Sync glossary-writing pedagogy only, never the actual domain terms.     |
 | `README.md`                                      | `README.md`               | Sync only if onboarding pedagogy changed.                                |
 | `CLAUDE.md` / `GEMINI.md`                        | `CLAUDE.md` / `GEMINI.md` | Hand-curated stable rules. Sync only structural / pedagogical changes.  |
 | Auto-memory dir `~/.claude/projects/<slug>/memory/` | `MEMORY.md`            | Distill recurring **patterns** as index entries. Never dump raw feedback. |
@@ -45,6 +46,17 @@ The template's prompt shelf has three roles. Don't conflate them.
 - If a feedback file captures a **stable engineering rule** ("never regex-match URLs for SSRF allowlists, parse the hostname"), it belongs in **AGENTS.md**, not MEMORY.md. MEMORY is reserved for *recent / active / project-current* context.
 - If a feedback entry is **personal preference** ("user prefers Dialog over Sheet"), it stays in personal auto-memory and does **not** sync to the template.
 - **Duplication with personal global `~/.claude/CLAUDE.md` is expected and OK.** The template stands alone for forks — every rule that should hold in a fresh fork must live in the template, even if it's also in your personal global rules. Don't suppress a transferable rule just because your personal CLAUDE.md already has it.
+
+## KNOWLEDGE.md philosophy (read before touching it)
+
+`KNOWLEDGE.md` is a downstream project's domain glossary — by design it is **almost entirely project-specific nouns**. You cannot port a project's actual glossary entries; they would fail the abstraction filter on every line.
+
+What you **can** sync is the *pedagogy* — the same way `SPEC.md` syncs requirement-writing technique, not the requirements:
+
+- The template's `KNOWLEDGE.md` is an instructional stub: it teaches *how to write a good glossary* (canonical term + _Avoid_ aliases, flagged-ambiguities section, example dialogue, the single- vs multi-area `KNOWLEDGE-MAP.md` split).
+- Sync only when the **glossary-writing guidance itself** has improved — e.g. a downstream project found a clearer way to structure flagged ambiguities, or the `deep-discuss` skill changed how it expects `KNOWLEDGE.md` to be laid out.
+- **Never** copy a downstream project's domain terms (Order, Invoice, Customer, or whatever that project's real nouns are) into the template. The worked-example terms in the stub are deliberately generic placeholders.
+- Keep `KNOWLEDGE.md` and the `deep-discuss` skill's `KNOWLEDGE-FORMAT.md` consistent — if one changes how a glossary entry is formatted, the other must match.
 
 ## The Abstraction Filter
 
@@ -120,6 +132,7 @@ Definitions:
 | `MEMORY.md`       | 200 lines    | ≤100 lines (index only)  |
 | `ARCHITECTURE.md` | 200 lines    | ≤150 lines               |
 | `SPEC.md`         | 100 lines    | ≤80 lines                |
+| `KNOWLEDGE.md`    | 100 lines    | ≤80 lines (stub only)    |
 
 If a planned change blows the ceiling, prefer in order: (a) merge with adjacent rule, (b) demote detail to a one-line `*Why:*` blurb, (c) move into a referenced doc and link from the template.
 
