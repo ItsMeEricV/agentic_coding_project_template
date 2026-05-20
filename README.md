@@ -20,8 +20,9 @@ The contract between you, your project, and any agent working on it. Keep these 
 1. **`SPEC.md`** — **The "What."** Product requirements, user stories, milestones.
 2. **`ARCHITECTURE.md`** — **The "Where."** Tech stack, directory structure, system flow.
 3. **`AGENTS.md`** — **The "How."** Engineering standards, anti-patterns, git workflow. The single source of truth for technical rules.
-4. **`MEMORY.md`** — **The "Journal."** Agent-maintained record of quirks, bugs, and patterns. Prevents repeating past mistakes.
-5. **`IMPLEMENTATION_PLAN.md`** — **The "When."** Living task tracker and inter-agent handoff doc. Created when execution starts.
+4. **`KNOWLEDGE.md`** — **The "Vocabulary."** Domain glossary and shared understandings. Keeps the codebase, docs, and conversation using the same words for the same things.
+5. **`MEMORY.md`** — **The "Journal."** Agent-maintained record of quirks, bugs, and patterns. Prevents repeating past mistakes.
+6. **`IMPLEMENTATION_PLAN.md`** — **The "When."** Living task tracker and inter-agent handoff doc. Created when execution starts.
 
 Two thin per-agent files (`CLAUDE.md`, `GEMINI.md`) point each tool at `AGENTS.md` so the rules stay in one place.
 
@@ -32,7 +33,7 @@ Two thin per-agent files (`CLAUDE.md`, `GEMINI.md`) point each tool at `AGENTS.m
 | Skill | What it does |
 | --- | --- |
 | 🧑‍⚖️ **`agent-code-reviewer`** | Get a second-opinion review from a different model (Gemini or Codex) via `cli/agent_code_reviewer.py`. Reviewer feedback only — never writes code. |
-| 🎓 **`deep-discuss`** | The agent grills you on a plan or design until you've resolved every branch of the decision tree. Use to stress-test a design before building it. |
+| 🎓 **`deep-discuss`** | The agent grills you on a plan or design until you've resolved every branch of the decision tree, stress-testing it against the project glossary (`KNOWLEDGE.md`) and recorded decisions (RFCs). Use before building. |
 | 🤝 **`handoff`** | Compact the current conversation into a handoff doc another agent (or future-you) can pick up. |
 | 🌱 **`new-project-setup`** | Walks fork-time decisions (project slug, ORM choice, ngrok, PG extensions, port collisions) and substitutes Docker placeholders in one batch. |
 | 🔄 **`project-template-sync`** | Back-ports lessons from a downstream project into this template. Generalizes project-specific rules into reusable foundation. |
@@ -70,20 +71,22 @@ See `cli/README.md` for script-authoring conventions.
 
 ## 🧭 How to use this template
 
-1. **Copy the prompt shelf** (`SPEC.md`, `ARCHITECTURE.md`, `AGENTS.md`, `MEMORY.md`) and the per-agent pointer files (`CLAUDE.md`, `GEMINI.md`) to your new project root.
+1. **Copy the prompt shelf** (`SPEC.md`, `ARCHITECTURE.md`, `AGENTS.md`, `KNOWLEDGE.md`, `MEMORY.md`) and the per-agent pointer files (`CLAUDE.md`, `GEMINI.md`) to your new project root.
 2. **Copy the tooling stubs** (`.gitignore`, `.prettierrc`, `tsconfig.json`, `.github/`, `cli/`).
 3. **Symlink the skills** into your Claude config: `ln -s ~/code/agentic_coding_project_template/claude/skills/* ~/.claude/skills/`.
 4. **Edit `SPEC.md`** first — define the problem and requirements.
 5. **Refine `ARCHITECTURE.md`** — lock in tech stack and folder structure.
 6. **Update `AGENTS.md`** with project-specific standards and "Hard Refusal" anti-patterns.
-7. **Initialize `MEMORY.md`** (or let the agent do it) to start capturing project context.
-8. **For Docker:** copy the relevant `docker/<stamp>/` contents to the project root and invoke the `new-project-setup` skill — do not edit Docker files by hand.
+7. **Seed `KNOWLEDGE.md`** with the domain terms your project relies on — or let a `deep-discuss` session populate it as decisions firm up.
+8. **Initialize `MEMORY.md`** (or let the agent do it) to start capturing project context.
+9. **For Docker:** copy the relevant `docker/<stamp>/` contents to the project root and invoke the `new-project-setup` skill — do not edit Docker files by hand.
 
 ## 💭 The philosophy
 
 **Documentation is code.** If an agent or a new developer cannot understand the project's intent and constraints by reading these files, the project is under-documented.
 
 - **`AGENTS.md`** ensures the rules of engagement are explicit.
+- **`KNOWLEDGE.md`** ensures everyone uses the same words for the same things.
 - **`MEMORY.md`** ensures hard-earned context isn't lost between sessions.
 - **`IMPLEMENTATION_PLAN.md`** ensures complex tasks are broken down and dependencies are respected.
 - **The skill bundle** ensures repeatable workflows don't drift from session to session.
