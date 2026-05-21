@@ -73,7 +73,12 @@ See `cli/README.md` for script-authoring conventions.
 
 1. **Copy the prompt shelf** (`SPEC.md`, `ARCHITECTURE.md`, `AGENTS.md`, `KNOWLEDGE.md`, `MEMORY.md`) and the per-agent pointer files (`CLAUDE.md`, `GEMINI.md`) to your new project root.
 2. **Copy the tooling stubs** (`.gitignore`, `.prettierrc`, `tsconfig.json`, `.github/`, `cli/`).
-3. **Symlink the skills** into your Claude config: `ln -s ~/code/agentic_coding_project_template/claude/skills/* ~/.claude/skills/`.
+3. **Symlink the individual skills you want** into your Claude config (`~/.claude/skills/` likely already has your own — symlink per-skill instead of globbing so you don't clobber anything):
+   ```bash
+   ln -s ~/code/agentic_coding_project_template/claude/skills/handoff ~/.claude/skills/handoff
+   ln -s ~/code/agentic_coding_project_template/claude/skills/new-project-setup ~/.claude/skills/new-project-setup
+   # ...repeat for any others you find useful
+   ```
 4. **Edit `SPEC.md`** first — define the problem and requirements.
 5. **Refine `ARCHITECTURE.md`** — lock in tech stack and folder structure.
 6. **Update `AGENTS.md`** with project-specific standards and "Hard Refusal" anti-patterns.
