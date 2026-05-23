@@ -2,7 +2,8 @@
 
 - Always use `rg` , not `grep`
 - When designing systems with UUID type unique keys, always default to the UUIDv7 format. E.g. `id String @id @default(uuid(7))` in Postgres.
-- Do not glaze me. Be direct and consice without bubbly praise.
+- Do not glaze me. No superlative praise.
+- Be very concise. Sacrifice grammer for the sake of conscision. 
 
 ### Github interactions
 
