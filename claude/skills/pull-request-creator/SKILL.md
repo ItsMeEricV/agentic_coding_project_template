@@ -21,7 +21,7 @@ Every PR follows a fixed title format, a fixed body template, and a fixed post-c
 | "I'll just use `gh pr create` real quick" | MCP is the default, not a peer of `gh`. |
 | "I'll mark a draft PR ready / push to a non-draft PR myself" | Never. Wait for user confirmation. |
 | "PR is merged but I have one more fix" | Don't push to a merged branch — start a new branch. |
-| "I'll skip `pr-review-toolkit`" | Run it after creation and wait for feedback. |
+| "I'll skip `pr-review-toolkit`" | Run it after creation and wait for feedback — unless the PR qualifies as simple (see Workflow step 4). |
 | "This review comment is obviously wrong" | Reply agree / disagree / defer to **every** comment. |
 
 ## Workflow
@@ -39,7 +39,7 @@ Every PR follows a fixed title format, a fixed body template, and a fixed post-c
 
 3. **Open in browser:** `gh pr view <N> --web`
 
-4. **Run `pr-review-toolkit`** and wait for user feedback before continuing.
+4. **Run `pr-review-toolkit`** and wait for user feedback before continuing. **Skip on simple PRs** — token cost outweighs signal. A PR is "simple" if any of these hold: docs/`.md`-only changes, tests-only changes, or under 500 lines of code changed. When skipping, also drop the "pr-review-toolkit was run" line from the Testing section.
 
 ## Title format
 
@@ -73,7 +73,7 @@ Include every section. If empty, leave placeholder bullets — never omit the se
 
 - All unit tests pass
 - [Notable new tests, especially toggle on/off coverage]
-- pr-review-toolkit was run; high-priority findings were fixed
+- pr-review-toolkit was run; high-priority findings were fixed  <!-- omit on simple PRs (see Workflow step 4) -->
 
 **Revertable? ♻️**
 -------
@@ -136,6 +136,6 @@ gh pr create --draft --title "..." --body-file "/tmp/pr-body-${BRANCH}.md"
 | Listed individual test names in Testing | Replace with "All unit tests pass" |
 | Mentioned project-specific build/format commands in Testing | Delete — CI runs these |
 | Hard-coded `draft: true` regardless of project | Check the project's `CLAUDE.md` / `AGENTS.md` first |
-| Skipped `pr-review-toolkit` run | Run it and wait for user feedback |
+| Skipped `pr-review-toolkit` run on a non-simple PR | Run it and wait for user feedback (skip only on docs/tests-only or <500 LOC) |
 | Forgot to open PR in browser | `gh pr view <N> --web` after creation |
 | Left a review comment unanswered | Reply agree / disagree / defer to every comment |
