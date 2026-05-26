@@ -29,7 +29,7 @@ git checkout -b ev-<description>
 
 After formatter/linter/type-check pass:
 
-1. **Commit immediately** — don't wait to be asked. Only commit files assigned to your persona in AGENTS.md/CLAUDE.md.
+1. **Commit immediately** — don't wait to be asked.
 2. **One commit per logical change** — atomic history.
 3. **Push after each commit.**
 4. **Descriptive messages** — explain the "what" concisely.
