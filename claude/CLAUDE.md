@@ -42,6 +42,7 @@ After formatter/linter/type-check pass:
   - ❌ Bad: `https://<workspace>.slack.com/archives/<channel-id>/<ts>`
   - ✅ Good: `[Internal user report about missing "Mark as read" option](https://<workspace>.slack.com/archives/<channel-id>/<ts>)`
 - **Commit-by-commit review note:** under "Notes for Reviewers", say each commit is self-contained and can be reviewed individually.
+- **Skip `pr-review-toolkit` on simple PRs** — token cost outweighs signal. Don't run it (and don't suggest it) when any of these hold: docs/`.md`-only changes, tests-only changes, or under 500 lines of code changed. This overrides the `pull-request-creator` skill's default to always run it.
 
 ## Code Style & Formatting
 
