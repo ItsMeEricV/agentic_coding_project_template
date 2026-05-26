@@ -1,92 +1,48 @@
 ## General DO
 
-- Always use `rg` , not `grep`
+- **Be very concise.** Drop preambles ("Let me…", "I'll go ahead and…"), trailing summaries ("I've now…"), unnecessary articles, and section headers on short replies. One sentence beats two. Sacrifice grammar when meaning survives. If the answer is a path, return the path — don't wrap it. Do not glaze me; no superlative praise.
+- Always use `rg`, not `grep`.
 - When designing systems with UUID type unique keys, always default to the UUIDv7 format. E.g. `id String @id @default(uuid(7))` in Postgres.
-- Do not glaze me. No superlative praise.
-- Be very concise. Sacrifice grammer for the sake of conscision. 
+- **Use the `pull-request-creator` skill** when creating, updating, or commenting on a PR — title format, body template, and comment-reply discipline all live there.
 
 ### Github interactions
 
 - **Prefer the GitHub MCP server** (`mcp__github__*` tools) for all GitHub operations: PR create/edit, issue create/edit, commenting, reviewing, reading PR/issue state, status checks, etc. JSON-typed args mean no shell-quoting hazards (markdown backticks in PR bodies stay literal), tool calls parallelize within a single message, and a single `pull_request_read` returns mergeable state + checks + stats in one shot.
 - **Fall back to the `gh` CLI** only when (a) the MCP doesn't expose the operation you need, (b) the MCP fails, or (c) you genuinely need an interactive flow. When using `gh` for multi-line content (PR body, issue body, commit message), write the body to `/tmp/<purpose>.txt` with the Write tool and pass `--body-file` / `-F` — never use `"$(cat <<'EOF' ... EOF)"`, since markdown backticks have leaked through quoted heredocs and triggered real command substitution (one historical case actually ran `vercel deploy --prod` from a PR body).
 
-### ⚠️ CRITICAL: Always start new work from a clean branch off master
+### ⚠️ Branch workflow — start new work from a clean branch off `main`/`master`
 
-### Branch Naming Format
+Branch name format: `ev-<description>` (hyphens, lowercase). Examples: `ev-hidden-channels-modal`, `ev-bugfix-section-header`, `ev-refactor-search-api`.
 
-All new branches MUST follow this format:
-
-```text
-ev-<description>
-```
-
-Examples:
-
-- `ev-hidden-channels-modal`
-- `ev-bugfix-section-header`
-- `ev-refactor-search-api`
-
-### Creating New Branches (AUTOMATED WORKFLOW)
-
-**When I ask you to create a new branch or start new work, ALWAYS execute these steps automatically:**
-
-1. **Check current status**: Run `git status` to see current branch
-2. **Switch to main and ensure it's clean**: Run `git checkout master`
-3. **Pull latest changes**: Run `git pull origin master` (or just `git pull`)
-4. **Verify master is up to date**: Check the pull output to confirm "Already up to date" or successful pull
-5. **Create new branch**: Run `git checkout -b ev-<description>`
-   - Use hyphens (not underscores) to separate words
-   - Keep description concise and descriptive
+When asked to create a new branch or start new work, run automatically:
 
 ```bash
-# Complete workflow (run these commands in sequence):
 git status
-git checkout master
+git checkout master   # or `main` per repo
 git pull
 git checkout -b ev-<description>
 ```
 
-**Why this matters**:
+### ⚠️ Commit + push workflow — after each completed change
 
-- Clean commit history in PRs (only your changes)
-- No unrelated commits from other feature branches
-- Easier code review for teammates
-- Cleaner git history overall
+**If tests fail**: try to fix them yourself first. If you can't, stop and ask before committing, pushing, or moving on — never commit on a red build.
 
-### Commit and Push Workflow
+After formatter/linter/type-check pass:
 
-### ⚠️ CRITICAL: Automatically commit and push after each completed change
+1. **Commit immediately** — don't wait to be asked.
+2. **One commit per logical change** — atomic history.
+3. **Push after each commit.**
+4. **Descriptive messages** — explain the "what" concisely.
+5. **Do not open a PR until the user asks.** When they do, invoke the `pull-request-creator` skill (owns title/body/reply discipline).
 
-**If tests fail**: First attempt to fix them yourself. If you cannot resolve the failure, stop and ask the user how to proceed — do not commit, push, or continue with other work while tests are failing.
+**PR description rules worth restating here** (the `pull-request-creator` skill owns the full template):
 
-After verifying that formatting, linting, and type checks pass:
-
-1. **Commit immediately** — don't wait for the user to ask. Make sure you only commit the files for your persona! For example, if you are a backend engineer then only commit files assigned to your in AGENTS.md/CLAUDE.md
-2. **One commit per logical change** — keep commits focused and atomic for a clean history
-3. **Push after each commit**
-4. **Use descriptive commit messages** — explain the "what" concisely
-5. **Do not open a pull request until the user asks you to** - We want to keep the momentum flowing. When the user asks for a PR then use the `Guidelines for PR descriptions` below.
-
-**Why this matters**:
-
-- No giant "do everything" commits that are hard to understand
-- Changes are pushed promptly so CI runs and reviewers see progress
-
-**Guidelines for PR descriptions**:
-
-- Use conversational, detailed bullet points
-- Include inline descriptions in Before/After screenshots
-- Add dev preview links with force parameters when applicable
-- Focus on reviewer experience - give them context
-- Add blank line after each header before content
-- Only include sections that are relevant
-- Add a Co-Authored-By line using your current model version (e.g. Co-Authored-By: Claude 4.6)
-- Do NOT add `---` separator lines
-- **Always use descriptive link text** - never use naked URLs
-  - ❌ Bad: `https://slack-pde.slack.com/archives/CUV8P3GUA/p1768922402598969`
-  - ✅ Good: `[Internal user report about missing "Mark as read" option](https://slack-pde.slack.com/archives/CUV8P3GUA/p1768922402598969)`
-- **Note for reviewers about commit-by-commit review**: Add a note in "Notes for Reviewers" that commits can be reviewed individually since each commit contains focused, individual changes
-  - Example: "**Commit-by-commit review**: Each commit is self-contained and can be reviewed individually for easier review"
+- Add a `Co-Authored-By:` line using your current model version (e.g. `Co-Authored-By: Claude 4.6`).
+- **Always use descriptive link text** — never naked URLs.
+  - ❌ Bad: `https://<workspace>.slack.com/archives/<channel-id>/<ts>`
+  - ✅ Good: `[Internal user report about missing "Mark as read" option](https://<workspace>.slack.com/archives/<channel-id>/<ts>)`
+- **Commit-by-commit review note:** under "Notes for Reviewers", say each commit is self-contained and can be reviewed individually.
+- **Skip `pr-review-toolkit` on simple PRs** — token cost outweighs signal. Don't run it (and don't suggest it) when any of these hold: docs/`.md`-only changes, tests-only changes, or under 500 lines of code changed. This overrides the `pull-request-creator` skill's default to always run it.
 
 ## Code Style & Formatting
 
@@ -94,6 +50,14 @@ After verifying that formatting, linting, and type checks pass:
 - **Execution:** After modifying or creating a file, run `npx prettier --write <file_path>` to ensure the disk version matches the project's style.
 - **Rules:** Respect the project's `.prettierrc` file. Do not use internal LLM formatting if it contradicts the local Prettier config.
 - **Verification:** If a "lint" or "format" step fails during a build, automatically run the Prettier fix command before reporting the error.
-- **rg:** Always use `rg`, not `grep`.
 
-## Anti-patterns:
+## Anti-patterns (DO NOT)
+
+- **NEVER create a GitHub issue without explicit user permission. HARD RULE.** Opening an issue adds a row to the user's backlog that has to be triaged, closed, or lived with. Past agents have unprompted-created issues while writing PR bodies, audit reports, and follow-up plans — the result is backlog bloat and confusion about what was actually decided. Before calling `mcp__github__issue_write` with `method: create` (or `gh issue create`), propose title + one-paragraph summary and wait for explicit "yes, open it." Editing/commenting on an existing issue, or closing one the user told you to close, is fine without re-asking.
+- **No destructive data operations without explicit permission.** Never reset, drop, or wipe a database, table, or production data store — not even in dev. Schema changes go through migrations; data fixes go through seed/backfill scripts. Same rule for `rm -rf`, `git reset --hard`, `git push --force`, or force-deleting branches with unpushed work — stop and ask first.
+- **No bandaid casts to silence type errors.** Don't reach for `any`, `ts-ignore`, `as any`, or `as unknown` to make TS errors disappear. Use Zod-parsed types, branded types, or type guards. If a cast is genuinely necessary at a system boundary, document the why inline. Same principle applies to runtime bugs — address the root cause, not the symptom.
+- **No PII in logs.** Never log emails, passwords, auth tokens, credit card numbers, or raw SQL containing user input. Log opaque identifiers (`userId`, `recordingId`) instead.
+- **Never commit secrets.** No API keys, tokens, or credentials in source control. Use `.env` dotfiles loaded at runtime.
+- **Mock at the network/storage boundary** (DB driver, `fetch`, S3 client) in tests. Never mock internal functions or private class methods — those produce brittle tests that break on every refactor.
+- **No `setTimeout` in tests.** Use `waitFor` / `findBy*` / `waitForElementToBeRemoved` instead.
+- **Vendor-agnostic naming for AI/ML integrations.** `invokeLlm` not `invokeClaude`; `generateEmbedding` not `generateTitanEmbedding`. The model/provider is a config detail, not a code contract.
