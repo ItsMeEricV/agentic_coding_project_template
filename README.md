@@ -2,14 +2,15 @@
 
 > **What is this?** A drop-in foundation for AI-assisted coding projects. It bundles the markdown files agents read to understand your project, a set of Claude Code skills that automate common workflows, opinionated Docker dev stacks, and a few small scripts. Fork the relevant pieces into a new project, fill in the placeholders, and your coding agents arrive pre-briefed.
 
-The repo has four halves, each independently useful:
+The repo has five halves, each independently useful:
 
-| Pillar | What it is | When you want it |
-| --- | --- | --- |
-| 📋 **Prompt shelf** | Source-of-truth markdown that humans and agents both read | Always |
-| 🤖 **Claude skills** | Reusable workflows the agent invokes on demand | Always (if you use Claude Code) |
-| 🐳 **Docker stacks** | Opinionated `docker-compose` setups per tech stack | When your project ships a backend / DB |
-| 🪛 **Scripts** | Standalone CLIs that operate on the project | As needed |
+| Pillar               | What it is                                                    | When you want it                       |
+| -------------------- | ------------------------------------------------------------- | -------------------------------------- |
+| 📋 **Prompt shelf**  | Source-of-truth markdown that humans and agents both read     | Always                                 |
+| 🤖 **Claude skills** | Reusable workflows the agent invokes on demand                | Always (if you use Claude Code)        |
+| 🪝 **Claude hooks**  | Mechanical guardrails the harness enforces on every tool call | Always (if you use Claude Code)        |
+| 🐳 **Docker stacks** | Opinionated `docker-compose` setups per tech stack            | When your project ships a backend / DB |
+| 🪛 **Scripts**       | Standalone CLIs that operate on the project                   | As needed                              |
 
 ---
 
@@ -30,17 +31,46 @@ Two thin per-agent files (`CLAUDE.md`, `GEMINI.md`) point each tool at `AGENTS.m
 
 `claude/skills/` ships seven Claude Code skills that get symlinked into your shell's `~/.claude/skills/` directory. Each is a self-contained workflow the agent invokes automatically when it matches your request.
 
-| Skill | What it does |
-| --- | --- |
-| 🧑‍⚖️ **`agent-code-reviewer`** | Get a second-opinion review from a different model (Gemini or Codex) via `cli/agent_code_reviewer.py`. Reviewer feedback only — never writes code. |
-| 🎓 **`deep-discuss`** | The agent grills you on a plan or design until you've resolved every branch of the decision tree, stress-testing it against the project glossary (`KNOWLEDGE.md`) and recorded decisions (RFCs). Use before building. |
-| 🤝 **`handoff`** | Compact the current conversation into a handoff doc another agent (or future-you) can pick up. |
-| 🌱 **`new-project-setup`** | Walks fork-time decisions (project slug, ORM choice, ngrok, PG extensions, port collisions) and substitutes Docker placeholders in one batch. |
-| 🔄 **`project-template-sync`** | Back-ports lessons from a downstream project into this template. Generalizes project-specific rules into reusable foundation. |
-| 🚀 **`pull-request-creator`** | Fixed PR title format, body template, attribution conventions, and `pr-review-toolkit` follow-up. |
-| 🔭 **`sentry-cli`** | Inspect Sentry issues, events, projects, orgs from the command line. |
+| Skill                          | What it does                                                                                                                                                                                                          |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 🧑‍⚖️ **`agent-code-reviewer`**   | Get a second-opinion review from a different model (Gemini or Codex) via `cli/agent_code_reviewer.py`. Reviewer feedback only — never writes code.                                                                    |
+| 🎓 **`deep-discuss`**          | The agent grills you on a plan or design until you've resolved every branch of the decision tree, stress-testing it against the project glossary (`KNOWLEDGE.md`) and recorded decisions (RFCs). Use before building. |
+| 🤝 **`handoff`**               | Compact the current conversation into a handoff doc another agent (or future-you) can pick up.                                                                                                                        |
+| 🌱 **`new-project-setup`**     | Walks fork-time decisions (project slug, ORM choice, ngrok, PG extensions, port collisions) and substitutes Docker placeholders in one batch.                                                                         |
+| 🔄 **`project-template-sync`** | Back-ports lessons from a downstream project into this template. Generalizes project-specific rules into reusable foundation.                                                                                         |
+| 🚀 **`pull-request-creator`**  | Fixed PR title format, body template, attribution conventions, and `pr-review-toolkit` follow-up.                                                                                                                     |
+| 🔭 **`sentry-cli`**            | Inspect Sentry issues, events, projects, orgs from the command line.                                                                                                                                                  |
 
 The global rules file (`claude/CLAUDE.md`) ships alongside the skills as a starter for your `~/.claude/CLAUDE.md`.
+
+## 🪝 The Claude hook bundle
+
+`hooks/` ships shell scripts the Claude Code harness invokes on every matching tool call. Unlike skills (which the agent chooses to invoke), hooks are **mechanical guardrails** — the harness runs them regardless of what the agent wants, so they're the right fix for failure modes behavioral rules can't reliably prevent.
+
+| Hook                                  | Event                                                  | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ------------------------------------- | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 🚧 **`enforce-worktree-boundary.sh`** | `PreToolUse` on `Edit\|Write\|MultiEdit\|NotebookEdit` | Blocks any edit whose `file_path` resolves to a different git worktree than the session's cwd. Fixes the silent cross-worktree-edit trap: agent runs `rg` from a parent dir, gets absolute paths into the wrong checkout, then writes there because the edit tools don't validate against cwd. Allows edits inside the session's worktree, and allows edits outside any git repo (`~/.claude/`, `/tmp/`, etc.). Bypass with `--dangerously-skip-permissions` or by removing the hook from `~/.claude/settings.json`. |
+
+Install by symlinking the directory into your Claude config, then registering each hook in `~/.claude/settings.json`:
+
+```bash
+ln -s ~/code/agentic_coding_project_template/hooks ~/.claude/hooks
+```
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          { "type": "command", "command": "$HOME/.claude/hooks/enforce-worktree-boundary.sh" }
+        ]
+      }
+    ]
+  }
+}
+```
 
 ## 🐳 The Docker stacks
 
@@ -54,10 +84,10 @@ Each stamp has its own README explaining placement, env vars, and profile activa
 
 `cli/` holds standalone tools that operate on the project but live outside the app code.
 
-| Script | Purpose |
-| --- | --- |
+| Script                       | Purpose                                                                                                                                                        |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **`agent_code_reviewer.py`** | Multi-provider second-opinion reviewer (Gemini + Codex). Run `python3 cli/agent_code_reviewer.py --help` for flags, or invoke the `agent-code-reviewer` skill. |
-| **`worktree-add.sh`** | Create a new git worktree wired up for the Docker stack — auto-assigns ports, writes per-worktree `.env.docker`, prints bring-up commands. |
+| **`worktree-add.sh`**        | Create a new git worktree wired up for the Docker stack — auto-assigns ports, writes per-worktree `.env.docker`, prints bring-up commands.                     |
 
 See `cli/README.md` for script-authoring conventions.
 
