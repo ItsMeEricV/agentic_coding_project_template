@@ -24,20 +24,23 @@ import { z } from 'zod';
 // =============================================================================
 
 // -----------------------------------------------------------------------------
-// Deploy lanes. This file ships the full three-lane shape. TRIM to your split:
+// Deploy lanes. This file ships the DEFAULT three-lane shape, named to match
+// Vercel's lanes exactly (local → development, preview → preview, production →
+// production), so detection is near-identity. TRIM only if your split differs:
 //
-//   • dev + prod only  → delete the 'staging' entry below, and in
+//   • dev + preview +  → DEFAULT. Keep as-is (preview → preview). Rename
+//     prod               'preview' → 'staging' here + below if you prefer that
+//                        vocabulary; the Vercel value is always 'preview'.
+//   • dev + prod only  → delete the 'preview' entry below, and in
 //                        detectEnvironment() map 'preview' → 'production'
 //                        (preview deploys exercise prod-like code paths).
 //   • single env       → keep only 'production'; detectEnvironment() can just
 //                        `return 'production'` and you can drop the is* flags
 //                        you don't branch on.
-//   • dev + staging +  → keep as-is (preview → staging).
-//     prod
 // -----------------------------------------------------------------------------
 export const APP_ENVS = [
   'development',
-  'staging', // ← delete this line for a dev+prod or single-env split
+  'preview', // ← delete this line for a dev+prod or single-env split
   'production',
 ] as const;
 export type AppEnv = (typeof APP_ENVS)[number];
@@ -72,7 +75,7 @@ function detectEnvironment(): AppEnv {
   const v = process.env.NEXT_PUBLIC_VERCEL_ENV;
   if (!v) return 'development'; // local Docker, scripts, unit tests
   if (v === 'production') return 'production';
-  if (v === 'preview') return 'staging'; // dev+prod split: change to 'production'
+  if (v === 'preview') return 'preview'; // dev+prod split: change to 'production'
   // Strict mode: a value is set but unrecognized. Refuse to silently default
   // to 'development' — that would unlock dev-only code paths if Vercel ever
   // added a new env value we haven't mapped (e.g., custom environments).
@@ -103,9 +106,9 @@ export const env = parsed.data;
 // labels); use the `is*` flags for branching.
 export const ENVIRONMENT: AppEnv = detectEnvironment();
 
-// Deployment-lane guards. (Drop `isStaging` if you trimmed the staging lane.)
+// Deployment-lane guards. (Drop `isPreview` if you trimmed the preview lane.)
 export const isDevelopment = ENVIRONMENT === 'development';
-export const isStaging = ENVIRONMENT === 'staging';
+export const isPreview = ENVIRONMENT === 'preview';
 export const isProduction = ENVIRONMENT === 'production';
 
 // Test-runner detection. NODE_ENV === 'test' covers tooling that sets it

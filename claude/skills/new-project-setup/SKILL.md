@@ -25,7 +25,7 @@ It also covers two environment concerns that aren't in `docker/` but belong at b
 | "I'll skip pgvector if it's not used yet"                 | pgvector is one apt line. Adding it later means `down -v`, image rebuild, volume loss. Ask up front.                                                    |
 | "The user said 'just set up Docker'"                      | "Set up Docker" still means "ask the substitution questions." A user-friendly skill that asks two questions beats a one-shot that ships wrong defaults. |
 | "I'll just add the env var I need to `process.env`"       | Every env var goes in the `environment.ts` Zod schema AND gets surfaced to the user. Silent `process.env.FOO` reads are the exact problem Q7 prevents.   |
-| "Vercel gives preview deploys, so I need a staging env"   | Number of environments is the user's call (Q6). Default is dev + prod; preview maps to prod behavior unless they asked for a staging lane.               |
+| "I'll just collapse this to dev + prod, simpler"          | Number of environments is the user's call (Q6). Default is dev + preview + prod (preview → preview) to match Vercel's lanes; only drop the preview lane if they ask. |
 
 ## Workflow
 
@@ -112,15 +112,17 @@ If lowering: substitute the `memory:` line in `docker-compose.app.yml` (web) —
 
 ### Q6: Environment split (BLOCKING)
 
-Ask: _"How many deploy environments does this project need? Default is **development + production**. Options: a single environment (local only / one deploy lane), the default two, or three with a **staging/preview** lane in between. This decides the `AppEnv` enum and the Vercel-lane detection in `environment.ts` (Q7)."_
+Ask: _"How many deploy environments does this project need? Default is **development + preview + production**, which maps cleanly onto Vercel's three lanes (local / preview / production). Options: that default three, just development + production, or a single environment (local only / one deploy lane). This decides the `AppEnv` enum and the Vercel-lane detection in `environment.ts` (Q7)."_
+
+The default lane is named `preview` to match Vercel's own `VERCEL_ENV=preview` value, so detection is near-identity. If the user prefers the word "staging," rename `'preview' → 'staging'` in the file — the underlying Vercel value is always `preview`.
 
 Map the answer onto the `references/environment.ts` template:
 
-- **development + production** (default) — delete the `'staging'` entry from `APP_ENVS`, drop `isStaging`, and in `detectEnvironment()` map `'preview' → 'production'` (preview deploys exercise prod-like paths). The trim notes in the reference call out each line to change.
+- **dev + preview + prod** (default) — use the reference as-is. `'preview' → 'preview'` mirrors Vercel's preview lane, so there's nothing to trim.
+- **development + production** — delete the `'preview'` entry from `APP_ENVS`, drop `isPreview`, and in `detectEnvironment()` map `'preview' → 'production'` (preview deploys exercise prod-like paths). The trim notes in the reference call out each line to change.
 - **single environment** — keep only `'production'` in `APP_ENVS`; `detectEnvironment()` can `return 'production'`. Drop the `is*` flags the project won't branch on.
-- **dev + staging + prod** — use the reference as-is (`'preview' → 'staging'`).
 
-If the user is unsure, take the default (dev + prod) and say so — adding a staging lane later is a small edit to this one file plus a Vercel env config, not a migration.
+If the user is unsure, take the default (dev + preview + prod) and say so — it matches Vercel's lanes out of the box, and collapsing to dev + prod later is a small edit to this one file.
 
 ### Q7: Environment variables + `environment.ts` (BLOCKING)
 
@@ -128,7 +130,7 @@ The template's biggest silent-footgun is unmanaged environment variables — var
 
 Copy `references/environment.ts` to `web/src/environment.ts`, then trim it per the Q6 answer. The file gives the project:
 
-- the `AppEnv` enum + `ENVIRONMENT` label and `isDevelopment` / `isStaging` / `isProduction` guards,
+- the `AppEnv` enum + `ENVIRONMENT` label and `isDevelopment` / `isPreview` / `isProduction` guards,
 - Vercel deploy-lane detection via `NEXT_PUBLIC_VERCEL_ENV` (works server-side and in the browser bundle), with a strict-mode throw on unrecognized values so a misconfigured deploy fails loud instead of silently running as `development`,
 - vitest / test-runner detection (`isTesting`, `isVitestRunning`),
 - one Zod `EnvSchema` that is the **only** place `process.env` is read.
@@ -160,6 +162,6 @@ State the rule to the user and follow it for the rest of setup: **every environm
 | Edited `.env.docker.example` instead of `.env.docker`           | `.example` is the source of truth for which vars _exist_; the real one is per-worktree, gitignored, and is what Compose actually reads.                                                                                 |
 | Ran infra `up` without `--env-file .env.docker`                 | `COMPOSE_PROFILES=ngrok` in `.env.docker` is silently ignored without the flag, so ngrok stays disabled even when the user thought they enabled it.                                                                     |
 | Ran `docker compose restart` to pick up env-var changes         | `restart` does not re-read env files. Use `up -d` (with `--build -V` if dependencies changed).                                                                                                                          |
-| Assumed a staging env because Vercel has preview deploys        | Environment count is the user's call (Q6). Default dev + prod maps `preview → production`; only add a staging lane when the user asks for one.                                                                            |
+| Collapsed to dev + prod without asking                          | Environment count is the user's call (Q6). Default is dev + preview + prod (`preview → preview`, matching Vercel); only drop the preview lane when the user asks.                                                         |
 | Added `process.env.FOO` read without touching `environment.ts`  | Every var goes through `EnvSchema` in `environment.ts` + `.env.docker.example`, and is announced to the user. Scattered silent `process.env` reads are exactly what Q7 exists to stop.                                   |
 | Shipped `environment.ts` unchanged on a non-Vercel project      | The `NEXT_PUBLIC_VERCEL_ENV` detection only works on Vercel. Swap the signal for the target platform's equivalent, or detection silently resolves to `development` everywhere.                                            |
