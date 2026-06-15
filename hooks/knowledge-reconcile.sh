@@ -44,6 +44,13 @@ for f in KNOWLEDGE.md KNOWLEDGE-MAP.md; do
 done
 [ -z "$glossary" ] && exit 0
 
+# Skip an unseeded template glossary: the shipped KNOWLEDGE.md is a guide
+# about how to write a glossary, not a real one. It (and every fork that
+# hasn't seeded real terms yet) carries a 'knowledge-reconcile:skip' marker.
+# Maintaining it is noise until the project replaces it with real terms and
+# deletes the marker.
+grep -qiF 'knowledge-reconcile:skip' "$glossary" && exit 0
+
 # Once-per-session marker.
 marker="${TMPDIR:-/tmp}/claude-knowledge-reconcile-${session_id:-nosession}.done"
 [ -f "$marker" ] && exit 0
