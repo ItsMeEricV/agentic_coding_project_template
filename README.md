@@ -2,15 +2,16 @@
 
 > **What is this?** A drop-in foundation for AI-assisted coding projects. It bundles the markdown files agents read to understand your project, a set of Claude Code skills that automate common workflows, opinionated Docker dev stacks, and a few small scripts. Fork the relevant pieces into a new project, fill in the placeholders, and your coding agents arrive pre-briefed.
 
-The repo has five halves, each independently useful:
+The repo has six halves, each independently useful:
 
-| Pillar               | What it is                                                    | When you want it                       |
-| -------------------- | ------------------------------------------------------------- | -------------------------------------- |
-| 📋 **Prompt shelf**  | Source-of-truth markdown that humans and agents both read     | Always                                 |
-| 🤖 **Claude skills** | Reusable workflows the agent invokes on demand                | Always (if you use Claude Code)        |
-| 🪝 **Claude hooks**  | Mechanical guardrails the harness enforces on every tool call | Always (if you use Claude Code)        |
-| 🐳 **Docker stacks** | Opinionated `docker-compose` setups per tech stack            | When your project ships a backend / DB |
-| 🪛 **Scripts**       | Standalone CLIs that operate on the project                   | As needed                              |
+| Pillar                | What it is                                                    | When you want it                       |
+| --------------------- | ------------------------------------------------------------- | -------------------------------------- |
+| 📋 **Prompt shelf**   | Source-of-truth markdown that humans and agents both read     | Always                                 |
+| 🤖 **Claude skills**  | Reusable workflows the agent invokes on demand                | Always (if you use Claude Code)        |
+| 🪝 **Claude hooks**   | Mechanical guardrails the harness enforces on every tool call | Always (if you use Claude Code)        |
+| 💬 **Slash commands** | User-triggered prompts you invoke with `/<name>`              | Always (if you use Claude Code)        |
+| 🐳 **Docker stacks**  | Opinionated `docker-compose` setups per tech stack            | When your project ships a backend / DB |
+| 🪛 **Scripts**        | Standalone CLIs that operate on the project                   | As needed                              |
 
 ---
 
@@ -45,11 +46,12 @@ The global rules file (`claude/CLAUDE.md`) ships alongside the skills as a start
 
 ## 🪝 The Claude hook bundle
 
-`hooks/` ships shell scripts the Claude Code harness invokes on every matching tool call. Unlike skills (which the agent chooses to invoke), hooks are **mechanical guardrails** — the harness runs them regardless of what the agent wants, so they're the right fix for failure modes behavioral rules can't reliably prevent.
+`hooks/` ships shell scripts the Claude Code harness invokes on lifecycle events — a matching tool call (`PreToolUse`) or the agent finishing a turn (`Stop`). Unlike skills (which the agent chooses to invoke), hooks are **mechanical guardrails** — the harness runs them regardless of what the agent wants, so they're the right fix for failure modes behavioral rules can't reliably prevent.
 
-| Hook                                  | Event                                                  | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| ------------------------------------- | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 🚧 **`enforce-worktree-boundary.sh`** | `PreToolUse` on `Edit\|Write\|MultiEdit\|NotebookEdit` | Blocks any edit whose `file_path` resolves to a different git worktree than the session's cwd. Fixes the silent cross-worktree-edit trap: agent runs `rg` from a parent dir, gets absolute paths into the wrong checkout, then writes there because the edit tools don't validate against cwd. Allows edits inside the session's worktree, and allows edits outside any git repo (`~/.claude/`, `/tmp/`, etc.). Bypass with `--dangerously-skip-permissions` or by removing the hook from `~/.claude/settings.json`. |
+| Hook                                  | Event                                                  | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ------------------------------------- | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 🚧 **`enforce-worktree-boundary.sh`** | `PreToolUse` on `Edit\|Write\|MultiEdit\|NotebookEdit` | Blocks any edit whose `file_path` resolves to a different git worktree than the session's cwd. Fixes the silent cross-worktree-edit trap: agent runs `rg` from a parent dir, gets absolute paths into the wrong checkout, then writes there because the edit tools don't validate against cwd. Allows edits inside the session's worktree, and allows edits outside any git repo (`~/.claude/`, `/tmp/`, etc.). Bypass with `--dangerously-skip-permissions` or by removing the hook from `~/.claude/settings.json`.                                                        |
+| 📓 **`knowledge-reconcile.sh`**       | `Stop`                                                 | Nudges the agent to reconcile `KNOWLEDGE.md` when a session looks like it pinned down domain language but never updated the glossary. Fires at most once per session, and only when a `KNOWLEDGE*.md` exists, the transcript matches a cue phrase, and no `KNOWLEDGE*.md` was already edited this session. Points the agent at `commands/update-knowledge.md` (the same procedure `/update-knowledge` runs) — no duplicated instructions. Lexical detection is the "dumb" first iteration, meant to be tuned. Loop-safe via `stop_hook_active` + a once-per-session marker. |
 
 Install by symlinking the directory into your Claude config, then registering each hook in `~/.claude/settings.json`:
 
@@ -67,9 +69,28 @@ ln -s ~/code/agentic_coding_project_template/hooks ~/.claude/hooks
           { "type": "command", "command": "$HOME/.claude/hooks/enforce-worktree-boundary.sh" }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [{ "type": "command", "command": "$HOME/.claude/hooks/knowledge-reconcile.sh" }]
+      }
     ]
   }
 }
+```
+
+## 💬 The slash commands
+
+`commands/` ships custom slash commands — markdown prompt files you invoke with `/<name>`. Unlike skills (which the agent auto-selects), these are user-triggered, and some double as the single source of truth that a hook points at.
+
+| Command                    | What it does                                                                                                                                                                                                                                                                                   |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 📓 **`/update-knowledge`** | Reconciles `KNOWLEDGE.md` against the domain terms discussed this session — lists each term, marks it recorded/updated/missing, writes the gaps. Run it manually anytime; the `knowledge-reconcile.sh` Stop hook also points the agent at this same file, so the procedure lives in one place. |
+
+Install by symlinking the directory (or per-command, to avoid clobbering your own):
+
+```bash
+ln -s ~/code/agentic_coding_project_template/commands ~/.claude/commands
 ```
 
 ## 🐳 The Docker stacks
