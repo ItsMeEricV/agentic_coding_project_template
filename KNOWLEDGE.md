@@ -1,3 +1,8 @@
+<!-- knowledge-reconcile:skip — this is the unseeded template guide, not a real glossary yet.
+     The KNOWLEDGE.md Stop hook ignores any file containing this marker. Once you've
+     replaced the examples below with your project's actual domain terms, DELETE this line
+     so the hook starts keeping the glossary current. -->
+
 # KNOWLEDGE.md: the project glossary
 
 This file is the project's **shared-understanding document**: a glossary of domain terms plus the common understandings that keep conversations precise. When you and an agent use the same words to mean the same things, plans stop drifting.
@@ -13,7 +18,7 @@ This file is the project's **shared-understanding document**: a glossary of doma
 KNOWLEDGE.md is a glossary, nothing else. Keep it devoid of implementation detail.
 
 - **The "what"** → `SPEC.md`. **The "where/how"** → `ARCHITECTURE.md` / `AGENTS.md`. **Quirks and gotchas** → `MEMORY.md`.
-- General programming vocabulary (timeout, retry, idempotent, cache) does **not** belong here even if the project leans on it. Before adding a term, ask: is this unique to *this project's domain*, or is it general engineering vocabulary? Only the former belongs.
+- General programming vocabulary (timeout, retry, idempotent, cache) does **not** belong here even if the project leans on it. Before adding a term, ask: is this unique to _this project's domain_, or is it general engineering vocabulary? Only the former belongs.
 
 ## Structure
 
