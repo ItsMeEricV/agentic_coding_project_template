@@ -1,17 +1,30 @@
-# Long-lived, machine-wide infra. Bring up ONCE per machine (not per worktree):
-#   docker compose -f docker-compose.infra.yml --env-file .env.docker up -d
+# Long-lived, machine-wide infra. Bring up ONCE per machine (not per worktree),
+# in its OWN standalone Compose project (`-p app-infra`):
+#   docker compose -p app-infra -f docker-compose.infra.yml --env-file .env.docker up -d
+# Tear down with the SAME project flag, or Compose won't find this group:
+#   docker compose -p app-infra -f docker-compose.infra.yml down
 #
-# The --env-file flag is required so COMPOSE_PROFILES (and NGROK_AUTHTOKEN, if
-# enabling ngrok) are loaded. Per-worktree vars are harmlessly ignored here.
+# Why `-p app-infra` (load-bearing): `--env-file` loads .env.docker, which sets a
+# PER-WORKTREE `COMPOSE_PROJECT_NAME` (e.g. <slug>-main). Without `-p`, Compose
+# would file this shared infra under that worktree's project group and prefix the
+# data volume with it. `-p` outranks `COMPOSE_PROJECT_NAME`, so infra stays in its
+# own `app-infra` group — shared across worktrees — no matter which worktree's env
+# file you point at. The top-level `name:` below only covers the no-env-file path;
+# it does NOT survive `--env-file`, so the flag is what actually wins. Keep
+# `--env-file` too: `COMPOSE_PROFILES` and `NGROK_AUTHTOKEN` (for ngrok) are still
+# read from it; per-worktree vars are harmlessly ignored by infra services.
 #
-# Owns the shared Docker network `app_shared`. Every per-worktree app stack
-# joins this network and resolves the database as the hostname `db` via the
-# network alias below — so the db container_name can vary per project without
-# the app stack caring. Substitute the four `app_*` placeholders for your
-# project's slug at bootstrap (see ../README.md and the new-project-setup
-# skill): `app_shared` (network), `app_db` (container_name),
-# `app_postgres_data` (volume), and reassign the host port `5432` if needed.
-# Otherwise two projects on the same machine will collide.
+# Owns the shared Docker network `app_shared` and the `app_postgres_data` volume
+# (both pinned via `name:` so they aren't project-prefixed). Every per-worktree
+# app stack joins the network and resolves the database as the hostname `db` via
+# the network alias below — so the db container_name can vary per project without
+# the app stack caring. Substitute the `app_*` placeholders for your project's
+# slug at bootstrap (see ../README.md and the new-project-setup skill):
+# `app-infra` (project name), `app_shared` (network), `app_db` (container_name),
+# `app_postgres_data` (volume), `app_dev` (POSTGRES_DB), and reassign the host
+# port `5432` if needed. Otherwise two projects on the same machine will collide.
+
+name: app-infra
 
 services:
   db:
@@ -66,6 +79,10 @@ services:
 
 volumes:
   app_postgres_data:
+    # Pinned (like the network below) so the actual Docker volume name is exactly
+    # this, never prefixed by the Compose project. Survives across worktrees and
+    # the `app-infra` project name.
+    name: app_postgres_data
 
 networks:
   app_shared:

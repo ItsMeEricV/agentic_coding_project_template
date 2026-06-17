@@ -5,7 +5,7 @@ Drop-in Docker dev stack for Next.js + PostgreSQL 18 + pgvector + Prisma (defaul
 ## What's in this stamp
 
 ```
-docker-compose.infra.yml    # db (always) + ngrok (profile-gated). Brought up once per machine.
+docker-compose.infra.yml    # db (always) + ngrok (profile-gated). Brought up once per machine, in its own `app-infra` project.
 docker-compose.app.yml      # web (always) + studio (profile-gated). Brought up once per worktree.
 Dockerfile.db               # PG18 + pgvector (single-stage)
 .env.docker.example         # required env vars per worktree
@@ -30,9 +30,10 @@ The trailing `/.` is load-bearing — `nextjs/*` would skip dotfiles like `.env.
 
 | Placeholder              | Where                                                | Replace with                                                                                                                            |
 | ------------------------ | ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `app-infra`              | `docker-compose.infra.yml` (top-level `name:`)       | `<your-project-slug>-infra` — the standalone Compose project the shared infra lives in; pass it as `-p <slug>-infra` on every infra `up`/`down` (see step 4) |
 | `app_shared`             | `docker-compose.infra.yml`, `docker-compose.app.yml` | `<your-project-slug>_shared` — must match in both files                                                                                 |
 | `app_db`                 | `docker-compose.infra.yml` (`container_name`)        | `<your-project-slug>_db` — keeps multiple projects on the same daemon from colliding on container name                                  |
-| `app_postgres_data`      | `docker-compose.infra.yml` (volume name)             | `<your-project-slug>_postgres_data` — keeps DB volumes isolated per project                                                             |
+| `app_postgres_data`      | `docker-compose.infra.yml` (volume key + its pinned `name:`) | `<your-project-slug>_postgres_data` — keeps DB volumes isolated per project                                                             |
 | `"5432:5432"`            | `docker-compose.infra.yml` (db `ports`)              | Change the **host** side (left of `:`) if 5432 is already in use on this machine — e.g. `"5433:5432"`. Container side must stay `5432`. |
 | `app_dev`                | `docker-compose.infra.yml` (`POSTGRES_DB`)           | Your default DB name                                                                                                                    |
 | `YOUR_NGROK_DOMAIN`      | `docker-compose.infra.yml` (ngrok `command`)         | Your reserved ngrok hostname; only needed if enabling the `ngrok` profile                                                               |
@@ -51,10 +52,13 @@ cp .env.docker.example .env.docker
 ### 4. Bring it up
 
 ```bash
-# Once per machine — shared infra. The --env-file flag is required so
-# COMPOSE_PROFILES (and NGROK_AUTHTOKEN, if enabling ngrok) is read; per-worktree
-# vars in .env.docker are harmlessly ignored by infra services.
-docker compose -f docker-compose.infra.yml --env-file .env.docker up -d
+# Once per machine — shared infra, in its own `app-infra` project. The
+# -p app-infra keeps infra a standalone group shared across worktrees: it
+# outranks the per-worktree COMPOSE_PROJECT_NAME that --env-file injects, so
+# infra isn't absorbed into a worktree's group (which would also prefix the data
+# volume). --env-file is still required so COMPOSE_PROFILES and NGROK_AUTHTOKEN
+# are read. Tear down with the same flag: `... -p app-infra ... down`.
+docker compose -p app-infra -f docker-compose.infra.yml --env-file .env.docker up -d
 
 # Once per worktree — app stack
 docker compose -f docker-compose.app.yml --env-file .env.docker up
