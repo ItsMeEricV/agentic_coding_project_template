@@ -11,7 +11,7 @@ The template's `docker/` stamps ship with opinionated defaults: PostgreSQL 18 + 
 
 This skill captures the fork-time questions and the exact substitutions each answer triggers. Ask every question below before writing to any file in `docker/`.
 
-It also covers two environment concerns that aren't in `docker/` but belong at bootstrap: how many deploy environments the project has (Q6), and how environment variables are declared and detected via a single `environment.ts` (Q7). Both default sensibly but are silently wrong often enough to ask.
+It also covers two bootstrap concerns outside `docker/`: how many deploy environments the project has (Q6), and how env vars are declared/detected via a single `environment.ts` (Q7). Both default sensibly but are silently wrong often enough to ask.
 
 **Violating the spirit of these questions wastes the user's time.** Defaults are right ~80% of the time and silently wrong ~20%. Always ask.
 
@@ -26,6 +26,7 @@ It also covers two environment concerns that aren't in `docker/` but belong at b
 | "The user said 'just set up Docker'"                      | "Set up Docker" still means "ask the substitution questions." A user-friendly skill that asks two questions beats a one-shot that ships wrong defaults. |
 | "I'll just add the env var I need to `process.env`"       | Every env var goes in the `environment.ts` Zod schema AND gets surfaced to the user. Silent `process.env.FOO` reads are the exact problem Q7 prevents.   |
 | "I'll just collapse this to dev + prod, simpler"          | Number of environments is the user's call (Q6). Default is dev + preview + prod (preview → preview) to match Vercel's lanes; only drop the preview lane if they ask. |
+| "I'll just use 5433 / 3001 for the port"                  | That guess may already be bound → `up` dies on `bind: address already in use`. Never pick ports by hand or RNG; run `scripts/next-free-port.sh <start>` (Q1), which scans `docker ps -a` + host sockets for the next free one. |
 
 ## Workflow
 
@@ -50,13 +51,20 @@ ORM-specific init runs **after** Q2 (so the install reflects the ORM the user ac
 
 Ask: _"What's the project slug? It namespaces the shared Docker network, the db container name, and per-worktree containers — needed to avoid collisions with other projects on this machine. Lowercase, hyphen- or underscore-separated. Example: `taskbird`, `analytics_pipeline`."_
 
-Then ask: _"Will any other project on this machine also publish Postgres on host port 5432? If yes, pick an alternate host port for this project's db (e.g. 5433, 5434). Default is 5432."_
+Then assign the db's **host** port — **scan, don't guess.** 5432 may already be held by a stale container or another project, and the stack dies on `bind: address already in use`. This skill's helper prints the lowest free port ≥ the start, skipping every Docker-published port (`docker ps -a`) and host-bound socket:
+
+```bash
+bash scripts/next-free-port.sh 5432
+```
+
+Use what it prints (5432 if free) and tell the user. Only the host side moves; the container always listens on 5432.
 
 Substitutions:
 
+- `docker-compose.infra.yml` — top-level `name: app-infra` → `name: <slug>-infra` (the standalone Compose project group the shared infra lives in; see step 4 — every infra `up`/`down` passes `-p <slug>-infra`)
 - `docker-compose.infra.yml` — `app_shared` → `<slug>_shared` (network name _and_ the `name:` field)
 - `docker-compose.infra.yml` — `container_name: app_db` → `container_name: <slug>_db` (the network alias `db` stays unchanged, so the app stack's `DATABASE_URL` keeps using `db:5432` regardless)
-- `docker-compose.infra.yml` — volume `app_postgres_data` → `<slug>_postgres_data` (top-level `volumes:` block _and_ the db service's mount)
+- `docker-compose.infra.yml` — volume `app_postgres_data` → `<slug>_postgres_data` (top-level `volumes:` block — both the key _and_ its pinned `name:` field — _and_ the db service's mount)
 - `docker-compose.infra.yml` — host port in `"5432:5432"` → `"<host-port>:5432"` (only the left side; the container always listens on 5432 internally)
 - `docker-compose.infra.yml` — `POSTGRES_DB` from `app_dev` → `<slug>_dev` (the catalog database, not the worktree one)
 - `docker-compose.app.yml` — `app_shared` → `<slug>_shared` (network name _and_ the `name:` field)
@@ -122,7 +130,7 @@ Map the answer onto the `references/environment.ts` template:
 - **development + production** — delete the `'preview'` entry from `APP_ENVS`, drop `isPreview`, and in `detectEnvironment()` map `'preview' → 'production'` (preview deploys exercise prod-like paths). The trim notes in the reference call out each line to change.
 - **single environment** — keep only `'production'` in `APP_ENVS`; `detectEnvironment()` can `return 'production'`. Drop the `is*` flags the project won't branch on.
 
-If the user is unsure, take the default (dev + preview + prod) and say so — it matches Vercel's lanes out of the box, and collapsing to dev + prod later is a small edit to this one file.
+If unsure, take the default and say so — collapsing to dev + prod later is a small edit to this one file.
 
 ### Q7: Environment variables + `environment.ts` (BLOCKING)
 
@@ -143,9 +151,9 @@ State the rule to the user and follow it for the rest of setup: **every environm
 
 1. Run `git diff` and show the user every change you made.
 2. If `web/src/` exists, write `web/src/environment.ts` from `references/environment.ts`, trimmed per the Q6 split, and run `npx prettier --write web/src/environment.ts`. Show it in the diff alongside the docker changes.
-3. Prompt: _"Run `cp .env.docker.example .env.docker` and edit per-worktree values (`WEB_PORT`, `STUDIO_PORT`, `WORKTREE_DB`, `COMPOSE_PROJECT_NAME`) before bringing the stack up."_
+3. Prompt: _"Run `cp .env.docker.example .env.docker` and edit per-worktree values (`WEB_PORT`, `STUDIO_PORT`, `WORKTREE_DB`, `COMPOSE_PROJECT_NAME`) before bringing the stack up."_ Scan for `WEB_PORT`/`STUDIO_PORT` too — don't guess: `scripts/next-free-port.sh 3000` and `… 5555` (or `… 3000 2` for two at once). Re-run per worktree; each needs its own free ports.
 4. Recommend the bring-up order:
-   - Once per machine: `docker compose -f docker-compose.infra.yml --env-file .env.docker up -d` (the `--env-file` is required so `COMPOSE_PROFILES` and `NGROK_AUTHTOKEN` are read; the per-worktree vars are harmlessly ignored by infra services).
+   - Once per machine, its own project: `docker compose -p <slug>-infra -f docker-compose.infra.yml --env-file .env.docker up -d`. `-p <slug>-infra` keeps infra a standalone group shared across worktrees — it outranks the per-worktree `COMPOSE_PROJECT_NAME` that `--env-file` injects, so infra isn't absorbed into a worktree's group. Keep `--env-file` (loads `COMPOSE_PROFILES`/`NGROK_AUTHTOKEN`). Tear down with the same `-p <slug>-infra`.
    - Once per worktree: `docker compose -f docker-compose.app.yml --env-file .env.docker up`.
    - On first `up` of the app stack, the `db-init` service creates the worktree database inside the shared Postgres and exits; `web` and `studio` are gated on its successful completion.
 5. Do **not** run `docker compose up` yourself unless the user explicitly asks. Long-running processes and "is this healthy?" judgement belong to the user on first boot.
@@ -159,8 +167,10 @@ State the rule to the user and follow it for the rest of setup: **every environm
 | Replaced only some ORM fences                                   | An app.yml `studio:` running Prisma against a Drizzle codebase fails on `up`. Replace _all_ fences in _both_ files.                                                                                                     |
 | Skipped Q4 and added an extension later                         | `down -v` + image rebuild = volume loss. Bring this up at bootstrap.                                                                                                                                                    |
 | Forgot ngrok target port                                        | ngrok's `host.docker.internal:3000` only forwards to the worktree publishing `WEB_PORT=3000`. Document which worktree that is.                                                                                          |
+| Picked a db / `WEB_PORT` / `STUDIO_PORT` by hand or RNG         | May already be bound → `up` fails (`bind: address already in use`). Use `scripts/next-free-port.sh <start>` for the next free port; re-run per worktree. |
 | Edited `.env.docker.example` instead of `.env.docker`           | `.example` is the source of truth for which vars _exist_; the real one is per-worktree, gitignored, and is what Compose actually reads.                                                                                 |
-| Ran infra `up` without `--env-file .env.docker`                 | `COMPOSE_PROFILES=ngrok` in `.env.docker` is silently ignored without the flag, so ngrok stays disabled even when the user thought they enabled it.                                                                     |
+| Ran infra `up` without `--env-file .env.docker`                 | `COMPOSE_PROFILES=ngrok` in `.env.docker` is silently ignored without the flag, so ngrok stays disabled even when the user thought they enabled it. (Pass `-p <slug>-infra` too — see next row.)                          |
+| Brought infra `up`/`down` without `-p <slug>-infra`             | Infra gets absorbed into the worktree's group (via the `COMPOSE_PROJECT_NAME` `--env-file` injects) and the data volume is renamed per-worktree. Always pass **both** `-p <slug>-infra` and `--env-file`. |
 | Ran `docker compose restart` to pick up env-var changes         | `restart` does not re-read env files. Use `up -d` (with `--build -V` if dependencies changed).                                                                                                                          |
 | Collapsed to dev + prod without asking                          | Environment count is the user's call (Q6). Default is dev + preview + prod (`preview → preview`, matching Vercel); only drop the preview lane when the user asks.                                                         |
 | Added `process.env.FOO` read without touching `environment.ts`  | Every var goes through `EnvSchema` in `environment.ts` + `.env.docker.example`, and is announced to the user. Scattered silent `process.env` reads are exactly what Q7 exists to stop.                                   |
