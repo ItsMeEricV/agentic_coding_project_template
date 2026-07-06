@@ -22,7 +22,11 @@ input=$(cat)
 file_path=$(printf '%s' "$input" | jq -r '.tool_input.file_path // empty')
 [ -z "$file_path" ] && exit 0
 
-session_root=$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel 2>/dev/null || true)
+# Session root from the hook-input cwd (same signal as knowledge-reconcile.sh and
+# enforce-worktree-boundary-bash.sh); fall back to CLAUDE_PROJECT_DIR/$PWD.
+cwd=$(printf '%s' "$input" | jq -r '.cwd // empty')
+[ -z "$cwd" ] && cwd="${CLAUDE_PROJECT_DIR:-$PWD}"
+session_root=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null || true)
 [ -z "$session_root" ] && exit 0
 
 file_dir=$(dirname "$file_path")

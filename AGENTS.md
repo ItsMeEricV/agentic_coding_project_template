@@ -15,6 +15,7 @@ If you are an AI assistant (like Gemini or Claude) reading this file:
 
 ### Core Standards
 
+- **EDIT IN PLACE — DO NOT TACK ON.** When something is already documented, configured, or implemented, revise that existing spot. Never add a parallel line, section, table row, or file that restates or extends it. Bolting on new content instead of updating what's there is bloat — a real maintainer edits in place.
 - **Modern Patterns:** Use the latest framework conventions (e.g., App Router for Next.js, Server Components by default).
 - **Performance:** Design for scalability and efficiency. Every query must be indexed.
 - **Code Style:** Write clear, concise, and idiomatic code. Favor readability over verbosity. Always use `async/await` for asynchronous TypeScript code — do not use raw `.then()` chains.
