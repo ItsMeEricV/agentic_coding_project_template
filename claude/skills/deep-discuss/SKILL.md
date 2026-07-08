@@ -31,6 +31,8 @@ Depth past the budget is my call, not a fixed ceiling — deep topics can warran
 
 While exploring the codebase, also pull in whatever is already written down so the discussion builds on it rather than relabeling it.
 
+- **Read `ARCHITECTURE.md` and `KNOWLEDGE.md` before the deep discussion** (resolving the area via `KNOWLEDGE-MAP.md` first if present). A discussion routed in the project's documented structure and language stress-tests the plan far harder than one starting cold.
+
 ### Where the docs live
 
 Most repos hold a single body of knowledge:
