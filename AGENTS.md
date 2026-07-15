@@ -23,6 +23,14 @@ If you are an AI assistant (like Gemini or Claude) reading this file:
 - **Vendor-agnostic naming.** Use generic names for swappable services: `invokeLlm` not `invokeClaude`, `generateEmbedding` not `generateTitanEmbedding`, `sendEmail` not `sendResend`, `uploadObject` not `uploadToS3`. The model / provider / vendor is a configuration detail, not a code contract — keeping the swap painless requires the codebase to never know which vendor is behind the interface.
 - **Refactoring discipline: do not preserve abstractions just because they exist.** When changing a function or module, reason about its actual failure modes before assuming the existing structure is load-bearing. Pre-existing transactions, retries, or wrapper abstractions are often there because they seemed nice at the time, not because removing them breaks anything. "It was already here" is not a reason to keep code.
 
+### Comment Discipline
+
+- **Short and concise comments are golden.** Explain what code does only when it is *not obvious* or guards an edge case. When in doubt, shorter is better — do not bloat.
+- **Cap comments at 6 lines.** If you need more, the code or its naming probably needs the work, not the comment.
+- **Never narrate an obvious method.** If the method name already says what it does, do not restate it in a comment above it.
+- **No historical corrections in comments.** Drop notes like `(used to be methodFoo, replaced 2026-07-01)` — that is what git blame is for.
+- **Cite RFCs / external docs in one place, not everywhere.** Link the spec at the single canonical implementation point; do not repeat the citation at every call site that touches the logic.
+
 ### Error Handling
 
 - **Result Types over Exceptions:** Use a Result type library (e.g., `neverthrow`) to represent operations that can fail. Reserve `try/catch` only for truly exceptional, unrecoverable situations or at system boundaries (e.g., Server Actions that must throw to communicate errors to the framework runtime).
