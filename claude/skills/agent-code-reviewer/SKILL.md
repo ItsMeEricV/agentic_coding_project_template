@@ -59,6 +59,15 @@ Reviewers will produce a mix of: edge-case flags, style/idiom opinions, performa
 - **Style / idiom opinions**: advisory only. Apply if the rule matches the project's existing AGENTS.md / style; ignore otherwise.
 - **Architecture rewrites**: never silently accept. Re-ground in the original spec and the question you actually asked. Often the reviewer didn't have the context for the constraint you'd already considered.
 
+## Praise budget
+
+Reviews exist to surface problems; praise is a rounding error on their value. The script's system prompts already encode this — hold the same line when you relay or summarize.
+
+- **At most 2 sentences of praise per review, and only in the top-level summary.**
+- **Never in per-line / inline comments.** Every inline comment must flag something needing attention; a line with nothing wrong gets no comment.
+- **Praise is optional.** Omit it entirely when nothing stands out — never manufacture it to soften a harsh review.
+- When you summarize reviewer output for the user, don't re-inflate what the prompt trimmed.
+
 ## Push-back protocol
 
 Reviewers are confident-sounding but often wrong. When a critique is wrong:

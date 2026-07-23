@@ -112,8 +112,10 @@ DEFAULT_SYSTEM_PROMPT: str = (
     "Be direct and concise — you cost money per token, so don't waste them. "
     "Focus on: edge cases the author likely missed, performance implications "
     "(no shortcuts), cost-saving opportunities (infra, API calls, storage), "
-    "and security concerns. Flag issues by severity. Skip praise — only flag "
-    "what needs attention."
+    "and security concerns. Flag issues by severity. Praise budget: at most 2 "
+    "sentences, only in the opening overall assessment, and only if genuinely "
+    "warranted — omit it entirely when nothing stands out. Everything after "
+    "that assessment must flag what needs attention."
 )
 
 PR_REVIEW_SYSTEM_PROMPT: str = (
@@ -127,7 +129,9 @@ PR_REVIEW_SYSTEM_PROMPT: str = (
     "of their own change — use it for context (intent, design decisions, scope), but don't trust "
     "it unconditionally. Push back on issues you find even if the description says otherwise.\n\n"
     "IMPORTANT: Respond with a JSON object containing:\n"
-    '- "summary": A 2-3 sentence overall assessment\n'
+    '- "summary": A 2-3 sentence overall assessment, which may include at most 2 sentences '
+    "of praise if genuinely warranted (praise is optional — omit it entirely when nothing "
+    "stands out; never manufacture it to soften the review)\n"
     '- "comments": An array of inline comments, each with:\n'
     '  - "path": The file path (from the diff header)\n'
     '  - "line": The line number in the NEW file (the `L<lineno>` value of the targeted line)\n'
@@ -137,6 +141,9 @@ PR_REVIEW_SYSTEM_PROMPT: str = (
     '  - "body": The review comment (use markdown). Prefix with severity: 🔴 CRITICAL, 🟠 HIGH, 🟡 MEDIUM, 🔵 LOW\n\n'
     "Only comment on lines that are ADDED or CHANGED (+ lines in the diff). "
     "Do NOT comment on deleted lines or unchanged context lines. "
+    "NEVER put praise in an inline comment — every entry in `comments` must flag something "
+    "that needs attention. If a line has nothing wrong with it, emit no comment for it. "
+    "Praise belongs only in `summary`, capped at 2 sentences. "
     "Return ONLY valid JSON, no markdown fences."
 )
 
