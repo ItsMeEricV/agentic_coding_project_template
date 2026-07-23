@@ -66,6 +66,7 @@ Reviews exist to surface problems; praise is a rounding error on their value. Th
 - **At most 2 sentences of praise per review, and only in the top-level summary.**
 - **Never in per-line / inline comments.** Every inline comment must flag something needing attention; a line with nothing wrong gets no comment.
 - **Praise is optional.** Omit it entirely when nothing stands out — never manufacture it to soften a harsh review.
+- **Never reply to praise.** No "thanks", no acknowledgement, no PR comment response. Praise carries no action item, so a reply just starts a back-and-forth that costs tokens and buries the real comments. Skip it silently and move to the next item.
 - When you summarize reviewer output for the user, don't re-inflate what the prompt trimmed.
 
 ## Push-back protocol
@@ -88,7 +89,7 @@ When _they're right_, fix the code and reply to the PR comment with `**[CLAUDE]*
 
 ## After you've used the script
 
-- If it ran `--pr <N>` mode, the reviewer's inline comments are already on the PR. Reply to each one with `**[CLAUDE]** agree / disagree / defer + reason`, same protocol as a human reviewer.
+- If it ran `--pr <N>` mode, the reviewer's inline comments are already on the PR. Reply to each _actionable_ one with `**[CLAUDE]** agree / disagree / defer + reason`, same protocol as a human reviewer. Leave praise unanswered — see [Praise budget](#praise-budget).
 - If it was a one-off question, summarize the takeaways in your response to the user — don't dump the raw reviewer output unless asked.
 - If the reviewer flagged something that turned out to be a real codebase pattern issue (not just a one-shot bug), consider whether it belongs in `AGENTS.md` as a new rule, or in `MEMORY.md` as a gotcha note.
 
