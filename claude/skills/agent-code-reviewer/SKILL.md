@@ -40,7 +40,7 @@ Do NOT use it for:
 The judgment, not a flag table:
 
 - **Gemini** (default): generally faster turnaround and cheaper, strong at line-level diff review. Default for routine `--pr` reviews and quick sanity passes.
-- **Codex** (GPT-5.5): better at architecture-level critique on novel subsystems; stronger at spotting subtle invariants in tightly coupled modules. Reach for it when the diff is _small but conceptually load-bearing_ — e.g., a new lock-free data structure, a security boundary, a non-obvious algorithm.
+- **Codex** (GPT-5.6): better at architecture-level critique on novel subsystems; stronger at spotting subtle invariants in tightly coupled modules. Reach for it when the diff is _small but conceptually load-bearing_ — e.g., a new lock-free data structure, a security boundary, a non-obvious algorithm.
 
 `--lite` rationale:
 

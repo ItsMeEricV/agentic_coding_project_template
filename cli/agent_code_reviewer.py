@@ -24,7 +24,7 @@ Model Selection:
     - gemini-3.1-pro-preview (default)
     - gemini-3.1-flash-lite-preview (--lite)
   Codex:
-    - gpt-5.5 (default)
+    - gpt-5.6 (default; alias routes to gpt-5.6-sol)
     - gpt-5.4-mini (--lite)
 
   Override the auto-pick via GEMINI_MODEL / CODEX_MODEL.
@@ -332,7 +332,7 @@ class CodexProvider(Provider):
 
     name = "codex"
     MODEL_LITE = "gpt-5.4-mini"
-    MODEL_PRO = "gpt-5.5"
+    MODEL_PRO = "gpt-5.6"
 
     def __init__(self) -> None:
         # Populated by load_history(); read by build_request().
