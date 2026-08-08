@@ -2,11 +2,12 @@
 
 > **What is this?** A drop-in foundation for AI-assisted coding projects. It bundles the markdown files agents read to understand your project, a set of Claude Code skills that automate common workflows, opinionated Docker dev stacks, and a few small scripts. Fork the relevant pieces into a new project, fill in the placeholders, and your coding agents arrive pre-briefed.
 
-The repo has six halves, each independently useful:
+The repo has seven halves, each independently useful:
 
 | Pillar                | What it is                                                    | When you want it                       |
 | --------------------- | ------------------------------------------------------------- | -------------------------------------- |
 | 📋 **Prompt shelf**   | Source-of-truth markdown that humans and agents both read     | Always                                 |
+| 🌐 **Global rules**   | Your cross-project rules, symlinked into each agent's config  | Always                                 |
 | 🤖 **Claude skills**  | Reusable workflows the agent invokes on demand                | Always (if you use Claude Code)        |
 | 🪝 **Claude hooks**   | Mechanical guardrails the harness enforces on every tool call | Always (if you use Claude Code)        |
 | 💬 **Slash commands** | User-triggered prompts you invoke with `/<name>`              | Always (if you use Claude Code)        |
@@ -26,7 +27,7 @@ The contract between you, your project, and any agent working on it. Keep these 
 5. **`MEMORY.md`** — **The "Journal."** Agent-maintained record of quirks, bugs, and patterns. Prevents repeating past mistakes.
 6. **`IMPLEMENTATION_PLAN.md`** — **The "When."** Living task tracker and inter-agent handoff doc. Created when execution starts.
 
-Two thin per-agent files (`CLAUDE.md`, `GEMINI.md`) point each tool at `AGENTS.md` so the rules stay in one place.
+Two thin per-agent files (`CLAUDE.md`, `GEMINI.md`) point each tool at `AGENTS.md` so the rules stay in one place. `CLAUDE.md` opens with an `@AGENTS.md` import, because Claude Code reads `CLAUDE.md` and **not** `AGENTS.md` — without the import the rules never reach the context window. `pi` and Codex read `AGENTS.md` natively and need no pointer.
 
 ## 🤖 The Claude skill bundle
 
@@ -42,7 +43,41 @@ Two thin per-agent files (`CLAUDE.md`, `GEMINI.md`) point each tool at `AGENTS.m
 | 🚀 **`pull-request-creator`**  | Fixed PR title format, body template, attribution conventions, and `pr-review-toolkit` follow-up.                                                                                                                     |
 | 🔭 **`sentry-cli`**            | Inspect Sentry issues, events, projects, orgs from the command line.                                                                                                                                                  |
 
-The global rules file (`claude/CLAUDE.md`) ships alongside the skills as a starter for your `~/.claude/CLAUDE.md`.
+`pi` loads these same skills — point its `settings.json` at the directory with `"skills": ["~/.claude/skills"]`.
+
+## 🌐 Global agent rules
+
+There are **two kinds of `AGENTS.md`** in this repo, and the difference is scope:
+
+| | Lives at | Scope | Copied per project? |
+| --- | --- | --- | --- |
+| **Global** | `global/AGENTS.md` | Rules that follow *you* into every repo you open, on this machine | **No** — one file, symlinked |
+| **Per-project** | `AGENTS.md` (repo root) | Engineering standards for *one* codebase | **Yes** — copied and customized per project |
+
+They stay separate because they have opposite lifetimes. The per-project file is *meant* to fork — a downstream project's copy grows its own stack-specific rules. The global file must *never* fork, or changing your communication style means editing it in every project you own.
+
+`global/` holds the files that symlink into your agents' config directories. Anything harness-specific sits in a subdirectory mirroring that agent's config path, so `global/pi/agent/` lands at `~/.pi/agent/`:
+
+```
+global/
+├── AGENTS.md                    -> ~/.claude/CLAUDE.md  AND  ~/.pi/agent/AGENTS.md
+└── pi/agent/APPEND_SYSTEM.md    -> ~/.pi/agent/APPEND_SYSTEM.md
+```
+
+| File                             | Holds                                                                            |
+| -------------------------------- | -------------------------------------------------------------------------------- |
+| `global/AGENTS.md`               | Harness-agnostic rules: communication style, branch + commit workflow, PR conventions, anti-patterns |
+| `global/pi/agent/APPEND_SYSTEM.md` | `pi`-only: which CLI to use per external service (`gh`, `neonctl`, `vercel`, `stripe`, Context7 over HTTP) |
+
+```bash
+ln -s ~/code/agentic_coding_project_template/global/AGENTS.md ~/.claude/CLAUDE.md
+ln -s ~/code/agentic_coding_project_template/global/AGENTS.md ~/.pi/agent/AGENTS.md
+ln -s ~/code/agentic_coding_project_template/global/pi/agent/APPEND_SYSTEM.md ~/.pi/agent/APPEND_SYSTEM.md
+```
+
+**Why `pi` gets two files and Claude gets one.** The agents differ in exactly one way: Claude has MCP servers, `pi` does not — so `pi` needs CLI instructions that would be wrong for Claude. `pi` loads two global files from `~/.pi/agent/`: `AGENTS.md` (context file) and `APPEND_SYSTEM.md` (appended to the system prompt). That second slot is what makes the split possible — `pi` gets the shared rules through one symlink and its CLI tooling through the other, so neither file needs a copy of the other's content. Claude reads only `~/.claude/CLAUDE.md`, so it sees the shared rules and never the CLI mappings.
+
+Every rule lives in exactly one file. Edit `global/AGENTS.md` and both agents pick it up; edit `global/APPEND_SYSTEM.md` and only `pi` does.
 
 ## 🪝 The Claude hook bundle
 
@@ -136,12 +171,13 @@ See `cli/README.md` for script-authoring conventions.
    ln -s ~/code/agentic_coding_project_template/claude/skills/new-project-setup ~/.claude/skills/new-project-setup
    # ...repeat for any others you find useful
    ```
-4. **Edit `SPEC.md`** first — define the problem and requirements.
-5. **Refine `ARCHITECTURE.md`** — lock in tech stack and folder structure.
-6. **Update `AGENTS.md`** with project-specific standards and "Hard Refusal" anti-patterns.
-7. **Seed `KNOWLEDGE.md`** with the domain terms your project relies on — or let a `deep-discuss` session populate it as decisions firm up. Delete the `knowledge-reconcile:skip` marker at the top once you've added real terms, so the `knowledge-reconcile.sh` Stop hook starts keeping the glossary current.
-8. **Initialize `MEMORY.md`** (or let the agent do it) to start capturing project context.
-9. **For Docker:** copy the relevant `docker/<stamp>/` contents to the project root and invoke the `new-project-setup` skill — do not edit Docker files by hand.
+4. **Symlink the global rules** into each agent's config — see [Global agent rules](#-global-agent-rules-claude--pi) for the three commands.
+5. **Edit `SPEC.md`** first — define the problem and requirements.
+6. **Refine `ARCHITECTURE.md`** — lock in tech stack and folder structure.
+7. **Update `AGENTS.md`** with project-specific standards and "Hard Refusal" anti-patterns.
+8. **Seed `KNOWLEDGE.md`** with the domain terms your project relies on — or let a `deep-discuss` session populate it as decisions firm up. Delete the `knowledge-reconcile:skip` marker at the top once you've added real terms, so the `knowledge-reconcile.sh` Stop hook starts keeping the glossary current.
+9. **Initialize `MEMORY.md`** (or let the agent do it) to start capturing project context.
+10. **For Docker:** copy the relevant `docker/<stamp>/` contents to the project root and invoke the `new-project-setup` skill — do not edit Docker files by hand.
 
 ## 💭 The philosophy
 
