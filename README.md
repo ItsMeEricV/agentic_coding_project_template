@@ -56,17 +56,23 @@ There are **two kinds of `AGENTS.md`** in this repo, and the difference is scope
 
 They stay separate because they have opposite lifetimes. The per-project file is *meant* to fork — a downstream project's copy grows its own stack-specific rules. The global file must *never* fork, or changing your communication style means editing it in every project you own.
 
-`global/` holds the two files that symlink into your agents' config directories:
+`global/` holds the files that symlink into your agents' config directories. Anything harness-specific sits in a subdirectory mirroring that agent's config path, so `global/pi/agent/` lands at `~/.pi/agent/`:
 
-| File                      | Holds                                                                            | Symlinked to                                       |
-| ------------------------- | -------------------------------------------------------------------------------- | -------------------------------------------------- |
-| `global/AGENTS.md`        | Harness-agnostic rules: communication style, branch + commit workflow, PR conventions, anti-patterns | `~/.claude/CLAUDE.md` **and** `~/.pi/agent/AGENTS.md` |
-| `global/APPEND_SYSTEM.md` | `pi`-only: which CLI to use per external service (`gh`, `neonctl`, `vercel`, `stripe`, Context7 over HTTP), and which services have no CLI at all | `~/.pi/agent/APPEND_SYSTEM.md`                      |
+```
+global/
+├── AGENTS.md                    -> ~/.claude/CLAUDE.md  AND  ~/.pi/agent/AGENTS.md
+└── pi/agent/APPEND_SYSTEM.md    -> ~/.pi/agent/APPEND_SYSTEM.md
+```
+
+| File                             | Holds                                                                            |
+| -------------------------------- | -------------------------------------------------------------------------------- |
+| `global/AGENTS.md`               | Harness-agnostic rules: communication style, branch + commit workflow, PR conventions, anti-patterns |
+| `global/pi/agent/APPEND_SYSTEM.md` | `pi`-only: which CLI to use per external service (`gh`, `neonctl`, `vercel`, `stripe`, Context7 over HTTP), and which services have no CLI at all |
 
 ```bash
 ln -s ~/code/agentic_coding_project_template/global/AGENTS.md ~/.claude/CLAUDE.md
 ln -s ~/code/agentic_coding_project_template/global/AGENTS.md ~/.pi/agent/AGENTS.md
-ln -s ~/code/agentic_coding_project_template/global/APPEND_SYSTEM.md ~/.pi/agent/APPEND_SYSTEM.md
+ln -s ~/code/agentic_coding_project_template/global/pi/agent/APPEND_SYSTEM.md ~/.pi/agent/APPEND_SYSTEM.md
 ```
 
 **Why `pi` gets two files and Claude gets one.** The agents differ in exactly one way: Claude has MCP servers, `pi` does not — so `pi` needs CLI instructions that would be wrong for Claude. `pi` loads two global files from `~/.pi/agent/`: `AGENTS.md` (context file) and `APPEND_SYSTEM.md` (appended to the system prompt). That second slot is what makes the split possible — `pi` gets the shared rules through one symlink and its CLI tooling through the other, so neither file needs a copy of the other's content. Claude reads only `~/.claude/CLAUDE.md`, so it sees the shared rules and never the CLI mappings.

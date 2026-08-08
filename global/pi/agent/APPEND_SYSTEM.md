@@ -1,6 +1,6 @@
 # pi-specific rules
 
-Loaded as `~/.pi/agent/APPEND_SYSTEM.md`. Shared rules load separately via
+Loaded as `~/.pi/agent/APPEND_SYSTEM.md` from `global/pi/agent/`. Shared rules load separately via
 `~/.pi/agent/AGENTS.md`. This file holds only what is specific to `pi`.
 
 ## External Service Tooling
