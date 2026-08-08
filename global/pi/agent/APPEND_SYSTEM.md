@@ -61,25 +61,3 @@ an MCP tool, unless they specifically ask for the web UI.
   (e.g. `vercel/next.js`).
 - Use this instead of guessing from memory — training data lags real releases. Do not
   use it for refactoring, debugging business logic, or general programming concepts.
-
-### Browser automation — no CLI equivalent
-
-- `chrome-devtools-mcp` is MCP-only and has no standalone CLI. For browser work from
-  `pi`, drive a pinned **Chrome for Testing** build with Playwright or Puppeteer via
-  `npx`, rather than reaching for an MCP tool that is not registered.
-- A pinned Chrome for Testing binary is already installed at
-  `~/.cache/chrome-for-testing/chrome/mac_arm-*/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`.
-  Point the automation library at it via its executable-path option so runs stay
-  reproducible — system Chrome auto-updates and drifts.
-- The template's `claude/skills/chrome-devtools-mcp/scripts/setup_chrome.sh` installs and
-  pins that binary if it is missing.
-
-### Google Workspace (Drive, Calendar, Gmail) — no CLI installed
-
-- There is currently **no** Drive, Calendar, or Gmail CLI on this machine, and no
-  MCP fallback in `pi`. Do not invent commands for these.
-- If the user needs one, say it is not installed and offer to install:
-  Calendar → `brew install gcalcli`; Drive → `brew install rclone` (configure a
-  `drive` remote). Gmail has no maintained CLI worth recommending — use the web UI
-  or a Google API script.
-- Wait for explicit approval before installing anything.
