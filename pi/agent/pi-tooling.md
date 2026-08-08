@@ -1,7 +1,7 @@
 # pi-specific rules
 
-Shared rules live in `shared/agent-rules.md`, loaded via the `~/code/CLAUDE.md` symlink.
-This file holds only what is specific to `pi`.
+Loaded as `~/.pi/agent/APPEND_SYSTEM.md`. Shared rules load separately via
+`~/.pi/agent/AGENTS.md`. This file holds only what is specific to `pi`.
 
 ## External Service Tooling
 

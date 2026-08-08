@@ -1,6 +1,8 @@
+@/Users/eric/code/agentic_coding_project_template/shared/agent-rules.md
+
 # Claude-specific rules
 
-Shared rules live in `shared/agent-rules.md`, loaded via the `~/code/CLAUDE.md` symlink.
+Shared rules are imported above from `shared/agent-rules.md`.
 This file holds only what is specific to Claude Code.
 
 ## Github interactions
