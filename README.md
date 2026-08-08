@@ -45,26 +45,33 @@ Two thin per-agent files (`CLAUDE.md`, `GEMINI.md`) point each tool at `AGENTS.m
 
 `pi` loads these same skills — point its `settings.json` at the directory with `"skills": ["~/.claude/skills"]`.
 
-## 🌐 Global agent rules (Claude + pi)
+## 🌐 Global agent rules
 
-The prompt shelf above is **per project**. This section is the other axis: rules that follow *you* across every project, symlinked into each agent's own config directory.
+There are **two kinds of `AGENTS.md`** in this repo, and the difference is scope:
 
-Two files, because the agents differ in exactly one way — Claude has MCP servers, `pi` does not:
+| | Lives at | Scope | Copied per project? |
+| --- | --- | --- | --- |
+| **Global** | `global/AGENTS.md` | Rules that follow *you* into every repo you open, on this machine | **No** — one file, symlinked |
+| **Per-project** | `AGENTS.md` (repo root) | Engineering standards for *one* codebase | **Yes** — copied and customized per project |
 
-| File                       | Holds                                                                            | Symlinked to                                       |
-| -------------------------- | -------------------------------------------------------------------------------- | -------------------------------------------------- |
-| `shared/agent-rules.md`    | Harness-agnostic rules: communication style, branch + commit workflow, PR conventions, anti-patterns | `~/.claude/CLAUDE.md` **and** `~/.pi/agent/AGENTS.md` |
-| `pi/agent/APPEND_SYSTEM.md` | `pi`-only: which CLI to use per external service (`gh`, `neonctl`, `vercel`, `stripe`, Context7 over HTTP), and which services have no CLI at all | `~/.pi/agent/APPEND_SYSTEM.md`                      |
+They stay separate because they have opposite lifetimes. The per-project file is *meant* to fork — a downstream project's copy grows its own stack-specific rules. The global file must *never* fork, or changing your communication style means editing it in every project you own.
+
+`global/` holds the two files that symlink into your agents' config directories:
+
+| File                      | Holds                                                                            | Symlinked to                                       |
+| ------------------------- | -------------------------------------------------------------------------------- | -------------------------------------------------- |
+| `global/AGENTS.md`        | Harness-agnostic rules: communication style, branch + commit workflow, PR conventions, anti-patterns | `~/.claude/CLAUDE.md` **and** `~/.pi/agent/AGENTS.md` |
+| `global/APPEND_SYSTEM.md` | `pi`-only: which CLI to use per external service (`gh`, `neonctl`, `vercel`, `stripe`, Context7 over HTTP), and which services have no CLI at all | `~/.pi/agent/APPEND_SYSTEM.md`                      |
 
 ```bash
-ln -s ~/code/agentic_coding_project_template/shared/agent-rules.md ~/.claude/CLAUDE.md
-ln -s ~/code/agentic_coding_project_template/shared/agent-rules.md ~/.pi/agent/AGENTS.md
-ln -s ~/code/agentic_coding_project_template/pi/agent/APPEND_SYSTEM.md ~/.pi/agent/APPEND_SYSTEM.md
+ln -s ~/code/agentic_coding_project_template/global/AGENTS.md ~/.claude/CLAUDE.md
+ln -s ~/code/agentic_coding_project_template/global/AGENTS.md ~/.pi/agent/AGENTS.md
+ln -s ~/code/agentic_coding_project_template/global/APPEND_SYSTEM.md ~/.pi/agent/APPEND_SYSTEM.md
 ```
 
-**How the `pi` files are derived.** `pi` loads two global files from `~/.pi/agent/`: `AGENTS.md` (context file) and `APPEND_SYSTEM.md` (appended to the system prompt). That second slot is what makes the split possible — `pi` gets the shared rules through one symlink and its CLI tooling through the other, so neither file needs a copy of the other's content. Claude only reads `~/.claude/CLAUDE.md`, so it sees the shared rules and never the CLI mappings.
+**Why `pi` gets two files and Claude gets one.** The agents differ in exactly one way: Claude has MCP servers, `pi` does not — so `pi` needs CLI instructions that would be wrong for Claude. `pi` loads two global files from `~/.pi/agent/`: `AGENTS.md` (context file) and `APPEND_SYSTEM.md` (appended to the system prompt). That second slot is what makes the split possible — `pi` gets the shared rules through one symlink and its CLI tooling through the other, so neither file needs a copy of the other's content. Claude reads only `~/.claude/CLAUDE.md`, so it sees the shared rules and never the CLI mappings.
 
-Everything lives in exactly one file. Edit `shared/agent-rules.md` once and both agents pick it up; edit `pi/agent/APPEND_SYSTEM.md` and only `pi` does.
+Every rule lives in exactly one file. Edit `global/AGENTS.md` and both agents pick it up; edit `global/APPEND_SYSTEM.md` and only `pi` does.
 
 ## 🪝 The Claude hook bundle
 
