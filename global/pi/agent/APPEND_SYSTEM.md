@@ -52,6 +52,32 @@ an MCP tool, unless they specifically ask for the web UI.
 - Run `stripe login` first if calls 401 — the CLI keeps its own auth, separate from `gh`.
 - Stay in test mode unless the user explicitly asks for live mode.
 
+### Browser automation — use `npx playwright cli`
+
+- The interactive verbs live under the `cli` subcommand — `npx playwright cli click …`,
+  not `npx playwright click …`. Bare `npx playwright` only offers one-shot
+  `screenshot` / `pdf` / `codegen` / `open`.
+- It is **stateful**: the browser survives between invocations, so each command is its own
+  `bash` call. `open <url>` to start, `close` when done. Name concurrent sessions with
+  `-s=<name>`; `list` / `close-all` / `kill-all` clean up strays.
+- Core loop: `snapshot` returns element refs, then `click` / `fill` / `type` / `select` /
+  `hover` / `check` / `upload` act on a ref. `find <text>` searches the snapshot without
+  re-dumping it. Snapshots are written to `.playwright-cli/` in the cwd — gitignore it.
+- Inspect with `console`, `requests` then `request <n>` / `response-body <n>`, and
+  `screenshot`. `route <pattern>` mocks a request; `network-state-set offline` kills the network.
+- Cookies and storage are first-class — no CDP script needed. `cookie-list`, `cookie-get`,
+  `cookie-set <name> <value>` (with `--domain --path --expires --httpOnly --secure --sameSite`),
+  `cookie-delete`, `cookie-clear`, plus `localstorage-*` and `sessionstorage-*`.
+  `state-save` / `state-load` persist a logged-in session to a file for reuse.
+- Attach to a Chrome already running with a debug port:
+  `npx playwright cli attach --cdp http://localhost:9222`.
+- Keep output small: `--raw` prints just the value, `--json` for parsing. Headless is the
+  default (`--headed` only when the user wants to watch); `--mobile` renders lighter pages.
+- **Not covered — say so instead of improvising:** Lighthouse audits (use the separate
+  `lighthouse` CLI), Chrome performance traces with Core Web Vitals insights, heap
+  snapshots, and CPU throttling. `tracing-start` / `tracing-stop` record a *Playwright*
+  trace for `npx playwright show-trace`, which is a different artifact.
+
 ### Library / framework docs — use the Context7 HTTP API
 
 - For current docs on a library, framework, SDK, or CLI (React, Next.js, Prisma,
