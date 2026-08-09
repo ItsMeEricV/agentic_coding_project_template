@@ -63,14 +63,14 @@ global/
 ├── AGENTS.md                             -> ~/.claude/CLAUDE.md  AND  ~/.pi/agent/AGENTS.md
 └── pi/agent/
     ├── APPEND_SYSTEM.md                  -> ~/.pi/agent/APPEND_SYSTEM.md
-    └── extensions/worktree-boundary.ts   -> ~/.pi/agent/extensions/worktree-boundary.ts
+    └── extensions/pretooluse-hooks.ts   -> ~/.pi/agent/extensions/pretooluse-hooks.ts
 ```
 
 | File                             | Holds                                                                            |
 | -------------------------------- | -------------------------------------------------------------------------------- |
 | `global/AGENTS.md`               | Harness-agnostic rules: communication style, branch + commit workflow, PR conventions, anti-patterns |
 | `global/pi/agent/APPEND_SYSTEM.md` | `pi`-only: which CLI to use per external service (`gh`, `neonctl`, `vercel`, `stripe`, Context7 over HTTP) |
-| `global/pi/agent/extensions/worktree-boundary.ts` | `pi`-only: runs the `hooks/` worktree guards on `pi` tool calls — see [Hooks](#-hooks) |
+| `global/pi/agent/extensions/pretooluse-hooks.ts` | `pi`-only: runs the `hooks/` `PreToolUse` scripts on `pi` tool calls — see [Hooks](#-hooks) |
 
 ```bash
 ln -s ~/code/agentic_coding_project_template/global/AGENTS.md ~/.claude/CLAUDE.md
@@ -125,10 +125,10 @@ ln -s ~/code/agentic_coding_project_template/hooks ~/.claude/hooks
 
 ### Same hooks, under `pi`
 
-`pi` has no hooks config — it has a TypeScript extension API — so `global/pi/agent/extensions/worktree-boundary.ts` adapts rather than reimplements. It catches `pi`'s `tool_call` event for `write`, `edit`, and `bash`, hands the matching script the same Claude-shaped JSON on stdin, and turns exit 2 back into `pi`'s `{ block: true }`. The rule keeps one implementation; only the adapter differs, so a fix to a script lands in both agents at once.
+`pi` has no hooks config — it has a TypeScript extension API — so `global/pi/agent/extensions/pretooluse-hooks.ts` adapts rather than reimplements. It catches `pi`'s `tool_call` event for `write`, `edit`, and `bash`, hands the matching script the same Claude-shaped JSON on stdin, and turns exit 2 back into `pi`'s `{ block: true }`. The rule keeps one implementation; only the adapter differs, so a fix to a script lands in both agents at once.
 
 ```bash
-ln -s ~/code/agentic_coding_project_template/global/pi/agent/extensions/worktree-boundary.ts ~/.pi/agent/extensions/worktree-boundary.ts
+ln -s ~/code/agentic_coding_project_template/global/pi/agent/extensions/pretooluse-hooks.ts ~/.pi/agent/extensions/pretooluse-hooks.ts
 ```
 
 It resolves the scripts through `~/.claude/hooks/` — the symlink above — which is the same cross-harness borrowing `pi` already does for skills via `"skills": ["~/.claude/skills"]` in `~/.pi/agent/settings.json`. If a script is missing, the extension stays out of the way. Only `PreToolUse` is adapted; `knowledge-reconcile.sh` (a `Stop` hook) runs under Claude alone.
@@ -138,7 +138,7 @@ It resolves the scripts through `~/.claude/hooks/` — the symlink above — whi
 1. **Write the script** into `hooks/`. It reads the event JSON on stdin; for `PreToolUse`, exit 2 with an explanation on stderr to block, exit 0 to allow. Nothing to install — `~/.claude/hooks` already symlinks to this directory.
 2. **Register it** in `~/.claude/settings.json` under its event, matching the JSON above.
 3. **Add a row** to the hook table so the next reader knows it exists.
-4. **For `pi`** (`PreToolUse` only): add the filename to `GUARDS` in `global/pi/agent/extensions/worktree-boundary.ts`, under each `pi` tool it should guard. Note the tool names differ from Claude's matchers — `pi` has `edit`, `write`, and `bash`, and its `edit` covers what Claude splits across `Edit`/`MultiEdit`. Scripts listed for a tool run in order until one blocks.
+4. **For `pi`** (`PreToolUse` only): add the filename to `GUARDS` in `global/pi/agent/extensions/pretooluse-hooks.ts`, under each `pi` tool it should guard. Note the tool names differ from Claude's matchers — `pi` has `edit`, `write`, and `bash`, and its `edit` covers what Claude splits across `Edit`/`MultiEdit`. Scripts listed for a tool run in order until one blocks.
 
 Test a `PreToolUse` script by piping it a payload directly — `echo '{"cwd":"'$PWD'","tool_input":{"command":"ls"}}' | hooks/your-hook.sh; echo $?` — which is exactly what both harnesses do to it.
 

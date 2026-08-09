@@ -83,7 +83,7 @@ BLOCKED: cross-worktree Bash command.
 This command changes directory into a different git worktree, so anything it
 writes lands in the wrong checkout. Re-run it anchored to the session's worktree
 ($session_root) instead of cd-ing out. Bypass by unregistering this hook
-(Claude: ~/.claude/settings.json, pi: ~/.pi/agent/extensions/worktree-boundary.ts).
+(Claude: ~/.claude/settings.json, pi: ~/.pi/agent/extensions/pretooluse-hooks.ts).
 EOF
   exit 2
 done <<< "$segments"

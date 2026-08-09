@@ -46,6 +46,6 @@ BLOCKED: cross-worktree edit.
 Anchor the path to the session's tree and retry. If you genuinely need
 to edit the other tree, do it from a session opened there. Bypass by
 unregistering this hook (Claude: ~/.claude/settings.json, pi:
-~/.pi/agent/extensions/worktree-boundary.ts).
+~/.pi/agent/extensions/pretooluse-hooks.ts).
 EOF
 exit 2
