@@ -1,11 +1,13 @@
 /**
- * Worktree boundary guard for pi.
+ * PreToolUse guards for pi.
  *
  * pi has no Claude-style hooks config, so this extension calls the same shell
- * scripts Claude Code runs as PreToolUse. One implementation of the rule, two
+ * scripts Claude Code runs as PreToolUse. One implementation of each rule, two
  * agents. The scripts speak Claude's hook contract — JSON on stdin, exit 2 plus
  * stderr to block — so this file only translates pi's tool events into that
  * shape and maps exit 2 back onto pi's `{ block: true }`.
+ *
+ * To give a new PreToolUse hook pi coverage, add its filename to GUARDS.
  */
 
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
@@ -16,13 +18,15 @@ import { join, resolve } from 'node:path';
 
 const HOOK_DIR = join(homedir(), '.claude', 'hooks');
 
-const GUARDS = {
-  edit: { script: 'enforce-worktree-boundary.sh', claudeName: 'Edit' },
-  write: { script: 'enforce-worktree-boundary.sh', claudeName: 'Write' },
-  bash: { script: 'enforce-worktree-boundary-bash.sh', claudeName: 'Bash' },
-} as const;
+// pi tool -> the hooks/ scripts that guard it, run in order until one blocks.
+const GUARDS: Record<string, string[]> = {
+  edit: ['enforce-worktree-boundary.sh'],
+  write: ['enforce-worktree-boundary.sh'],
+  bash: ['enforce-worktree-boundary-bash.sh'],
+};
 
-type GuardedTool = keyof typeof GUARDS;
+// The scripts match on Claude's tool names, so report those rather than pi's.
+const CLAUDE_TOOL_NAMES: Record<string, string> = { edit: 'Edit', write: 'Write', bash: 'Bash' };
 
 interface HookResult {
   code: number;
@@ -44,50 +48,41 @@ async function runHook(script: string, payload: unknown, cwd: string): Promise<H
 
 export default function (pi: ExtensionAPI) {
   pi.on('tool_call', async (event, ctx) => {
-    const guard = GUARDS[event.toolName as GuardedTool];
-    if (!guard) return undefined;
-
-    const scriptPath = join(HOOK_DIR, guard.script);
-    if (!existsSync(scriptPath)) return undefined;
+    const scripts = GUARDS[event.toolName];
+    if (!scripts) return undefined;
 
     // The scripts read absolute paths; pi hands us paths relative to the session.
     const input = event.input as { path?: string; command?: string };
-    const toolInput =
-      event.toolName === 'bash'
-        ? { command: input.command }
-        : { file_path: input.path ? resolve(ctx.cwd, input.path) : undefined };
+    const payload = {
+      cwd: ctx.cwd,
+      hook_event_name: 'PreToolUse',
+      tool_name: CLAUDE_TOOL_NAMES[event.toolName] ?? event.toolName,
+      tool_input:
+        event.toolName === 'bash'
+          ? { command: input.command }
+          : { file_path: input.path ? resolve(ctx.cwd, input.path) : undefined },
+    };
 
-    let result: HookResult;
-    try {
-      result = await runHook(
-        guard.script,
-        {
-          cwd: ctx.cwd,
-          hook_event_name: 'PreToolUse',
-          tool_name: guard.claudeName,
-          tool_input: toolInput,
-        },
-        ctx.cwd,
-      );
-    } catch (error) {
-      // Fail open, but say so — a silent guard is worse than none.
-      if (ctx.hasUI) {
-        ctx.ui.notify(
-          `worktree-boundary: ${guard.script} failed to run (${String(error)})`,
-          'warning',
-        );
+    for (const script of scripts) {
+      if (!existsSync(join(HOOK_DIR, script))) continue;
+
+      let result: HookResult;
+      try {
+        result = await runHook(script, payload, ctx.cwd);
+      } catch (error) {
+        // Fail open, but say so — a silent guard is worse than none.
+        if (ctx.hasUI) {
+          ctx.ui.notify(`hook ${script} failed to run (${String(error)})`, 'warning');
+        }
+        continue;
       }
-      return undefined;
-    }
 
-    if (result.code === 2) {
-      return { block: true, reason: result.stderr || 'Blocked: cross-worktree operation.' };
-    }
-    if (result.code !== 0 && ctx.hasUI) {
-      ctx.ui.notify(
-        `worktree-boundary: ${guard.script} exited ${result.code}; allowing.`,
-        'warning',
-      );
+      if (result.code === 2) {
+        return { block: true, reason: result.stderr || `Blocked by ${script}.` };
+      }
+      if (result.code !== 0 && ctx.hasUI) {
+        ctx.ui.notify(`hook ${script} exited ${result.code}; allowing.`, 'warning');
+      }
     }
     return undefined;
   });

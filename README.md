@@ -131,7 +131,16 @@ ln -s ~/code/agentic_coding_project_template/hooks ~/.claude/hooks
 ln -s ~/code/agentic_coding_project_template/global/pi/agent/extensions/worktree-boundary.ts ~/.pi/agent/extensions/worktree-boundary.ts
 ```
 
-It resolves the scripts through `~/.claude/hooks/` — the symlink above — which is the same cross-harness borrowing `pi` already does for skills via `"skills": ["~/.claude/skills"]` in `~/.pi/agent/settings.json`. If a script is missing, the extension stays out of the way. Only the two worktree guards are wired up; `knowledge-reconcile.sh` is not.
+It resolves the scripts through `~/.claude/hooks/` — the symlink above — which is the same cross-harness borrowing `pi` already does for skills via `"skills": ["~/.claude/skills"]` in `~/.pi/agent/settings.json`. If a script is missing, the extension stays out of the way. Only `PreToolUse` is adapted; `knowledge-reconcile.sh` (a `Stop` hook) runs under Claude alone.
+
+### Adding a hook
+
+1. **Write the script** into `hooks/`. It reads the event JSON on stdin; for `PreToolUse`, exit 2 with an explanation on stderr to block, exit 0 to allow. Nothing to install — `~/.claude/hooks` already symlinks to this directory.
+2. **Register it** in `~/.claude/settings.json` under its event, matching the JSON above.
+3. **Add a row** to the hook table so the next reader knows it exists.
+4. **For `pi`** (`PreToolUse` only): add the filename to `GUARDS` in `global/pi/agent/extensions/worktree-boundary.ts`, under each `pi` tool it should guard. Note the tool names differ from Claude's matchers — `pi` has `edit`, `write`, and `bash`, and its `edit` covers what Claude splits across `Edit`/`MultiEdit`. Scripts listed for a tool run in order until one blocks.
+
+Test a `PreToolUse` script by piping it a payload directly — `echo '{"cwd":"'$PWD'","tool_input":{"command":"ls"}}' | hooks/your-hook.sh; echo $?` — which is exactly what both harnesses do to it.
 
 The published [`@hsingjui/pi-hooks`](https://github.com/hsingjui/pi-hooks) package does the general version of this — the whole Claude hooks schema, every event. It's the right call if you want all your hooks ported; this repo keeps the ~80-line adapter instead because a package that intercepts every tool call runs with full system permissions, and two guards don't need a dependency for that.
 
