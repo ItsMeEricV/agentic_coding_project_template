@@ -70,7 +70,7 @@ global/
 | -------------------------------- | -------------------------------------------------------------------------------- |
 | `global/AGENTS.md`               | Harness-agnostic rules: communication style, branch + commit workflow, PR conventions, anti-patterns |
 | `global/pi/agent/APPEND_SYSTEM.md` | `pi`-only: which CLI to use per external service (`gh`, `neonctl`, `vercel`, `stripe`, Context7 over HTTP) |
-| `global/pi/agent/extensions/worktree-boundary.ts` | `pi`-only: runs the `hooks/` worktree guards on `pi` tool calls — see [The hook bundle](#-the-hook-bundle-claude--pi) |
+| `global/pi/agent/extensions/worktree-boundary.ts` | `pi`-only: runs the `hooks/` worktree guards on `pi` tool calls — see [Hooks](#-hooks) |
 
 ```bash
 ln -s ~/code/agentic_coding_project_template/global/AGENTS.md ~/.claude/CLAUDE.md
@@ -82,7 +82,7 @@ ln -s ~/code/agentic_coding_project_template/global/pi/agent/APPEND_SYSTEM.md ~/
 
 Every rule lives in exactly one file. Edit `global/AGENTS.md` and both agents pick it up; edit `global/APPEND_SYSTEM.md` and only `pi` does.
 
-## 🪝 The hook bundle (Claude + `pi`)
+## 🪝 Hooks
 
 `hooks/` ships shell scripts the Claude Code harness invokes on lifecycle events — a matching tool call (`PreToolUse`) or the agent finishing a turn (`Stop`). Unlike skills (which the agent chooses to invoke), hooks are **mechanical guardrails** — the harness runs them regardless of what the agent wants, so they're the right fix for failure modes behavioral rules can't reliably prevent.
 
