@@ -64,15 +64,14 @@ Include every section. If empty, leave placeholder bullets — never omit the se
 **What this PR does 🧑‍💻**
 -------
 
-- ✅ Change 1 with detailed explanation
-- ✅ Change 2 with context
-- ✅ Change 3 with reasoning
+- ✅ Change 1 — one line
+- ✅ Change 2 — one line
+- ✅ Change 3 — one line
 
 **Testing 🧪**
 -------
 
-- All unit tests pass
-- [Notable new tests, especially toggle on/off coverage]
+- [What you exercised by hand and what you saw]
 - pr-review-toolkit was run; high-priority findings were fixed  <!-- omit on simple PRs (see Workflow step 4) -->
 
 **Revertable? ♻️**
@@ -99,7 +98,7 @@ Include every section. If empty, leave placeholder bullets — never omit the se
 - 📄 **Design doc**: [descriptive title](link)
 ```
 
-**Rules:** Testing: never mention project-specific build/format commands CI runs automatically, never list individual test names. Links: descriptive text, never naked URLs. Formatting: emoji-after-titles, blank line after each header, no `---` separators, conversational bullets. Files-needing-extra-attention subsection only when genuinely risky.
+**Rules:** What this PR does: **3 bullets max**, one line each — less is more; the diff carries the detail. Testing: manual verification only — never mention unit tests, linters, type checks, or build commands, since CI gates all of them before merge. Links: descriptive text, never naked URLs. Formatting: emoji-after-titles, blank line after each header, no `---` separators, conversational bullets. Files-needing-extra-attention subsection only when genuinely risky.
 
 ## Review comments
 
@@ -133,8 +132,8 @@ gh pr create --draft --title "..." --body-file "/tmp/pr-body-${BRANCH}.md"
 |---|---|
 | Reached for `gh pr create` first | Default to MCP `create_pull_request` |
 | Used naked URL in Links section | Wrap in descriptive link text |
-| Listed individual test names in Testing | Replace with "All unit tests pass" |
-| Mentioned project-specific build/format commands in Testing | Delete — CI runs these |
+| Mentioned unit tests, linters, type checks, or builds in Testing | Delete — CI gates these before merge |
+| Wrote more than 3 "What this PR does" bullets, or padded them with rationale | Cut to 3 one-line bullets |
 | Hard-coded `draft: true` regardless of project | Check the project's `CLAUDE.md` / `AGENTS.md` first |
 | Skipped `pr-review-toolkit` run on a non-simple PR | Run it and wait for user feedback (skip only on docs/tests-only or <500 LOC) |
 | Forgot to open PR in browser | `gh pr view <N> --web` after creation |
