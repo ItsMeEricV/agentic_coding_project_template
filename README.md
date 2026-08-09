@@ -9,7 +9,7 @@ The repo has seven halves, each independently useful:
 | 📋 **Prompt shelf**   | Source-of-truth markdown that humans and agents both read     | Always                                 |
 | 🌐 **Global rules**   | Your cross-project rules, symlinked into each agent's config  | Always                                 |
 | 🤖 **Claude skills**  | Reusable workflows the agent invokes on demand                | Always (if you use Claude Code)        |
-| 🪝 **Claude hooks**   | Mechanical guardrails the harness enforces on every tool call | Always (if you use Claude Code)        |
+| 🪝 **Agent hooks**    | Mechanical guardrails the harness enforces on every tool call | Always (Claude Code, and `pi` via an adapter) |
 | 💬 **Slash commands** | User-triggered prompts you invoke with `/<name>`              | Always (if you use Claude Code)        |
 | 🐳 **Docker stacks**  | Opinionated `docker-compose` setups per tech stack            | When your project ships a backend / DB |
 | 🪛 **Scripts**        | Standalone CLIs that operate on the project                   | As needed                              |
@@ -60,14 +60,17 @@ They stay separate because they have opposite lifetimes. The per-project file is
 
 ```
 global/
-├── AGENTS.md                    -> ~/.claude/CLAUDE.md  AND  ~/.pi/agent/AGENTS.md
-└── pi/agent/APPEND_SYSTEM.md    -> ~/.pi/agent/APPEND_SYSTEM.md
+├── AGENTS.md                             -> ~/.claude/CLAUDE.md  AND  ~/.pi/agent/AGENTS.md
+└── pi/agent/
+    ├── APPEND_SYSTEM.md                  -> ~/.pi/agent/APPEND_SYSTEM.md
+    └── extensions/worktree-boundary.ts   -> ~/.pi/agent/extensions/worktree-boundary.ts
 ```
 
 | File                             | Holds                                                                            |
 | -------------------------------- | -------------------------------------------------------------------------------- |
 | `global/AGENTS.md`               | Harness-agnostic rules: communication style, branch + commit workflow, PR conventions, anti-patterns |
 | `global/pi/agent/APPEND_SYSTEM.md` | `pi`-only: which CLI to use per external service (`gh`, `neonctl`, `vercel`, `stripe`, Context7 over HTTP) |
+| `global/pi/agent/extensions/worktree-boundary.ts` | `pi`-only: runs the `hooks/` worktree guards on `pi` tool calls — see [The hook bundle](#-the-hook-bundle-claude--pi) |
 
 ```bash
 ln -s ~/code/agentic_coding_project_template/global/AGENTS.md ~/.claude/CLAUDE.md
@@ -75,17 +78,17 @@ ln -s ~/code/agentic_coding_project_template/global/AGENTS.md ~/.pi/agent/AGENTS
 ln -s ~/code/agentic_coding_project_template/global/pi/agent/APPEND_SYSTEM.md ~/.pi/agent/APPEND_SYSTEM.md
 ```
 
-**Why `pi` gets two files and Claude gets one.** The agents differ in exactly one way: Claude has MCP servers, `pi` does not — so `pi` needs CLI instructions that would be wrong for Claude. `pi` loads two global files from `~/.pi/agent/`: `AGENTS.md` (context file) and `APPEND_SYSTEM.md` (appended to the system prompt). That second slot is what makes the split possible — `pi` gets the shared rules through one symlink and its CLI tooling through the other, so neither file needs a copy of the other's content. Claude reads only `~/.claude/CLAUDE.md`, so it sees the shared rules and never the CLI mappings.
+**Why `pi` gets two rules files and Claude gets one.** The agents differ in exactly one way: Claude has MCP servers, `pi` does not — so `pi` needs CLI instructions that would be wrong for Claude. `pi` loads two global files from `~/.pi/agent/`: `AGENTS.md` (context file) and `APPEND_SYSTEM.md` (appended to the system prompt). That second slot is what makes the split possible — `pi` gets the shared rules through one symlink and its CLI tooling through the other, so neither file needs a copy of the other's content. Claude reads only `~/.claude/CLAUDE.md`, so it sees the shared rules and never the CLI mappings.
 
 Every rule lives in exactly one file. Edit `global/AGENTS.md` and both agents pick it up; edit `global/APPEND_SYSTEM.md` and only `pi` does.
 
-## 🪝 The Claude hook bundle
+## 🪝 The hook bundle (Claude + `pi`)
 
 `hooks/` ships shell scripts the Claude Code harness invokes on lifecycle events — a matching tool call (`PreToolUse`) or the agent finishing a turn (`Stop`). Unlike skills (which the agent chooses to invoke), hooks are **mechanical guardrails** — the harness runs them regardless of what the agent wants, so they're the right fix for failure modes behavioral rules can't reliably prevent.
 
 | Hook                                  | Event                                                  | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | ------------------------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 🚧 **`enforce-worktree-boundary{,-bash}.sh`** | `PreToolUse` on `Edit\|Write\|MultiEdit\|NotebookEdit` + `Bash` | Blocks work that escapes the session's worktree. The edit-tool hook blocks any edit whose `file_path` resolves to a different git worktree (agent `rg`s from a parent dir, gets absolute paths into the wrong checkout, writes there); the `-bash` companion blocks a command that `cd`/`pushd`es into a different worktree (`cd /path/to/main && npx prettier --write web/…`, which would format the main checkout, not the worktree edits). Detects the escape, not a per-tool allowlist — nothing rots. Allows in-tree work and anything outside a repo (`~/.claude/`, `/tmp/`). Not caught: a bare absolute path with no `cd`. Bypass with `--dangerously-skip-permissions` or by removing the hook from `~/.claude/settings.json`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| 🚧 **`enforce-worktree-boundary{,-bash}.sh`** | `PreToolUse` on `Edit\|Write\|MultiEdit\|NotebookEdit` + `Bash` | Blocks work that escapes the session's worktree. The edit-tool hook blocks any edit whose `file_path` resolves to a different git worktree (agent `rg`s from a parent dir, gets absolute paths into the wrong checkout, writes there); the `-bash` companion blocks a command that `cd`/`pushd`es into a different worktree (`cd /path/to/main && npx prettier --write web/…`, which would format the main checkout, not the worktree edits). Detects the escape, not a per-tool allowlist — nothing rots. Allows in-tree work and anything outside a repo (`~/.claude/`, `/tmp/`). Not caught: a bare absolute path with no `cd`. Bypass by unregistering the hook (Claude: `~/.claude/settings.json`; `pi`: `~/.pi/agent/extensions/`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | 📓 **`knowledge-reconcile.sh`**       | `Stop`                                                 | Nudges the agent to reconcile `KNOWLEDGE.md` when the branch introduces a new domain **type** (`type`/`interface`/`enum`/Prisma `model`/Zod schema) whose name isn't in any `KNOWLEDGE*.md`. Keys off the branch diff, not the conversation, so a UI/bugfix session that adds no new type stays silent — and the nudge says to make no edits and no summary if the types turn out to be plumbing. Fires at most once per session; skipped when no glossary exists, when a `KNOWLEDGE*.md` was already edited this session, or when the glossary still carries the `knowledge-reconcile:skip` marker (delete it once you seed real terms). Points the agent at `commands/update-knowledge.md` (the same procedure `/update-knowledge` runs) — no duplicated instructions. Type-extraction regexes assume TS/Prisma; tune for other stacks. Loop-safe via `stop_hook_active` + a once-per-session marker. Design rationale + tuning ledger: [`docs/experiments/knowledge-reconcile.md`](docs/experiments/knowledge-reconcile.md). |
 
 Install by symlinking the directory into your Claude config, then registering each hook in `~/.claude/settings.json`:
@@ -119,6 +122,18 @@ ln -s ~/code/agentic_coding_project_template/hooks ~/.claude/hooks
   }
 }
 ```
+
+### Same hooks, under `pi`
+
+`pi` has no hooks config — it has a TypeScript extension API — so `global/pi/agent/extensions/worktree-boundary.ts` adapts rather than reimplements. It catches `pi`'s `tool_call` event for `write`, `edit`, and `bash`, hands the matching script the same Claude-shaped JSON on stdin, and turns exit 2 back into `pi`'s `{ block: true }`. The rule keeps one implementation; only the adapter differs, so a fix to a script lands in both agents at once.
+
+```bash
+ln -s ~/code/agentic_coding_project_template/global/pi/agent/extensions/worktree-boundary.ts ~/.pi/agent/extensions/worktree-boundary.ts
+```
+
+It resolves the scripts through `~/.claude/hooks/` — the symlink above — which is the same cross-harness borrowing `pi` already does for skills via `"skills": ["~/.claude/skills"]` in `~/.pi/agent/settings.json`. If a script is missing, the extension stays out of the way. Only the two worktree guards are wired up; `knowledge-reconcile.sh` is not.
+
+The published [`@hsingjui/pi-hooks`](https://github.com/hsingjui/pi-hooks) package does the general version of this — the whole Claude hooks schema, every event. It's the right call if you want all your hooks ported; this repo keeps the ~80-line adapter instead because a package that intercepts every tool call runs with full system permissions, and two guards don't need a dependency for that.
 
 ## 💬 The slash commands
 
@@ -171,7 +186,7 @@ See `cli/README.md` for script-authoring conventions.
    ln -s ~/code/agentic_coding_project_template/claude/skills/new-project-setup ~/.claude/skills/new-project-setup
    # ...repeat for any others you find useful
    ```
-4. **Symlink the global rules** into each agent's config — see [Global agent rules](#-global-agent-rules-claude--pi) for the three commands.
+4. **Symlink the global rules** into each agent's config — see [Global agent rules](#-global-agent-rules) for the three commands.
 5. **Edit `SPEC.md`** first — define the problem and requirements.
 6. **Refine `ARCHITECTURE.md`** — lock in tech stack and folder structure.
 7. **Update `AGENTS.md`** with project-specific standards and "Hard Refusal" anti-patterns.
