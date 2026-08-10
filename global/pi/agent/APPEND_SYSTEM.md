@@ -69,6 +69,17 @@ an MCP tool, unless they specifically ask for the web UI.
   `cookie-set <name> <value>` (with `--domain --path --expires --httpOnly --secure --sameSite`),
   `cookie-delete`, `cookie-clear`, plus `localstorage-*` and `sessionstorage-*`.
   `state-save` / `state-load` persist a logged-in session to a file for reuse.
+- **Injecting an auth cookie** (skipping a login flow with a token from a dev script):
+  - Order is `open <url>` → `cookie-set` → `goto`. `cookie-set` needs a browser context to
+    attach to, and the page must load *after* the cookie exists.
+  - Read the cookie name from whatever minted the token; never hardcode it. Frameworks
+    suffix and prefix session cookie names (per-instance suffixes, `__Secure-` on https),
+    and a wrong name authenticates as nobody while looking like it worked.
+  - Leave `--secure` off on `http://localhost` — a secure cookie is never sent over http,
+    and the failure reads as a bad token rather than a bad flag.
+  - Without `--expires` it is a session cookie and dies on `close`. Pass a unix timestamp,
+    or `state-save` the context once and `state-load` it afterwards.
+  - A saved state file holds a live session token: keep it out of the repo and out of logs.
 - Attach to a Chrome already running with a debug port:
   `npx playwright cli attach --cdp http://localhost:9222`.
 - Keep output small: `--raw` prints just the value, `--json` for parsing. Headless is the
