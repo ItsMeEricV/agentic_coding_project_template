@@ -65,21 +65,19 @@ an MCP tool, unless they specifically ask for the web UI.
 - **Log records are production data.** Aggregate (`summarize count() by <field>`) when you only
   need shape, and never paste raw log bodies into a commit, PR description, or issue comment.
 
-### Sentry — two different CLIs, pick by task
+### Sentry — use `sentry`
 
-- **`sentry`** (global) — investigating what broke: `sentry issue list --query "is:unresolved"`,
-  `sentry issue view <PROJECT-123>`, `sentry issue explain <PROJECT-123>`, `sentry trace view`,
-  `sentry log list --follow`. It auto-detects org and project, so do not pass them until it says
+- `sentry issue list --query "is:unresolved"`, `sentry issue view <PROJECT-123>`,
+  `sentry issue explain <PROJECT-123>`, `sentry trace view`, `sentry log list --follow`.
+- It auto-detects org and project from the DSN and config, so do not pass them until it says
   it cannot. Use `--json --fields <a,b,c>` and `--limit` to keep responses small.
-- **`sentry-cli`** (project-scoped, in the project's `node_modules/.bin`) — build and release
-  plumbing: `releases`, `sourcemaps`, `debug-files`, `deploys`, `monitors`, `send-event`. Run it
-  as `npx sentry-cli <command>` from the project directory; it is not on the global PATH.
-- These are separate binaries with separate command trees — `sentry issues` and `sentry-cli issues`
-  are not the same interface. Match the tool to the task before reaching for flags.
-- The `sentry-cli` skill documents the `sentry` binary's full command map, safety rules, and
-  dashboard grid; read it instead of guessing. Issues are addressed by short ID (`PROJECT-123`),
-  never the numeric one.
+- Issues are addressed by short ID (`PROJECT-123`), never the numeric one.
+- The `sentry-cli` skill documents this binary's full command map, safety rules, and dashboard
+  grid; read it instead of guessing.
 - Destructive commands (`project delete`, deleting a release) need explicit user approval first.
+- Ignore the `sentry-cli` binary you may find in a project's `node_modules/.bin`. It is a
+  different, older tool that `@sentry/nextjs` pulls in to upload sourcemaps during the build —
+  build machinery, not something to invoke by hand.
 
 ### Browser automation — use `npx playwright cli`
 
