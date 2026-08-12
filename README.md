@@ -31,7 +31,7 @@ Two thin per-agent files (`CLAUDE.md`, `GEMINI.md`) point each tool at `AGENTS.m
 
 ## 🤖 The Claude skill bundle
 
-`claude/skills/` ships seven Claude Code skills that get symlinked into your shell's `~/.claude/skills/` directory. Each is a self-contained workflow the agent invokes automatically when it matches your request.
+`claude/skills/` ships six Claude Code skills that get symlinked into your shell's `~/.claude/skills/` directory. Each is a self-contained workflow the agent invokes automatically when it matches your request.
 
 | Skill                          | What it does                                                                                                                                                                                                          |
 | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -41,7 +41,6 @@ Two thin per-agent files (`CLAUDE.md`, `GEMINI.md`) point each tool at `AGENTS.m
 | 🌱 **`new-project-setup`**     | Walks fork-time decisions (project slug, ORM choice, ngrok, PG extensions, port collisions) and substitutes Docker placeholders in one batch.                                                                         |
 | 🔄 **`project-template-sync`** | Back-ports lessons from a downstream project into this template. Generalizes project-specific rules into reusable foundation.                                                                                         |
 | 🚀 **`pull-request-creator`**  | Fixed PR title format, body template, attribution conventions, and `pr-review-toolkit` follow-up.                                                                                                                     |
-| 🔭 **`sentry-cli`**            | Inspect Sentry issues, events, projects, orgs from the command line.                                                                                                                                                  |
 
 `pi` loads these same skills — point its `settings.json` at the directory with `"skills": ["~/.claude/skills"]`.
 

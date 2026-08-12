@@ -72,8 +72,10 @@ an MCP tool, unless they specifically ask for the web UI.
 - It auto-detects org and project from the DSN and config, so do not pass them until it says
   it cannot. Use `--json --fields <a,b,c>` and `--limit` to keep responses small.
 - Issues are addressed by short ID (`PROJECT-123`), never the numeric one.
-- The `sentry-cli` skill documents this binary's full command map, safety rules, and dashboard
-  grid; read it instead of guessing.
+- `sentry schema` browses the API and `sentry api <endpoint>` calls it — reach for those before
+  fetching OpenAPI specs or guessing at endpoints.
+- On releases, the positional is `<org-slug>/<version>`: `sentry release create acme/1.0.0` makes
+  version `1.0.0` in org `acme`. The version must match `Sentry.init({ release })` exactly.
 - Destructive commands (`project delete`, deleting a release) need explicit user approval first.
 - Ignore the `sentry-cli` binary you may find in a project's `node_modules/.bin`. It is a
   different, older tool that `@sentry/nextjs` pulls in to upload sourcemaps during the build —
