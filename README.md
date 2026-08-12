@@ -69,7 +69,7 @@ global/
 | File                             | Holds                                                                            |
 | -------------------------------- | -------------------------------------------------------------------------------- |
 | `global/AGENTS.md`               | Harness-agnostic rules: communication style, branch + commit workflow, PR conventions, anti-patterns |
-| `global/pi/agent/APPEND_SYSTEM.md` | `pi`-only: which CLI to use per external service (`gh`, `neonctl`, `vercel`, `stripe`, `playwright cli`, Context7 over HTTP) |
+| `global/pi/agent/APPEND_SYSTEM.md` | `pi`-only: which CLI to use per external service (`gh`, `neonctl`, `vercel`, `stripe`, `axiom`, `sentry`, `playwright cli`, Context7 over HTTP) |
 | `global/pi/agent/extensions/pretooluse-hooks.ts` | `pi`-only: runs the `hooks/` `PreToolUse` scripts on `pi` tool calls — see [Hooks](#-hooks) |
 
 ```bash
