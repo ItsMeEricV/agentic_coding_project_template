@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PreToolUse hook for Edit|Write|MultiEdit|NotebookEdit.
+# PreToolUse hook for Edit|Write|MultiEdit|NotebookEdit (pi: write, edit).
 #
 # Blocks edits whose file_path resolves to a different git worktree
 # (`git rev-parse --show-toplevel`) than the session's cwd.
@@ -44,8 +44,8 @@ BLOCKED: cross-worktree edit.
   session's tree: $session_root
 
 Anchor the path to the session's tree and retry. If you genuinely need
-to edit the other tree, do it from a session opened there. Bypass:
-disable the hook in ~/.claude/settings.json or rerun with
---dangerously-skip-permissions.
+to edit the other tree, do it from a session opened there. Bypass by
+unregistering this hook (Claude: ~/.claude/settings.json, pi:
+~/.pi/agent/extensions/pretooluse-hooks.ts).
 EOF
 exit 2

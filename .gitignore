@@ -46,3 +46,6 @@ coverage/
 
 # Vercel
 .vercel/
+
+# Playwright CLI scratch (page snapshots)
+.playwright-cli/

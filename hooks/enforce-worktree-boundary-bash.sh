@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PreToolUse hook for Bash.
+# PreToolUse hook for Bash (pi: bash).
 #
 # Blocks a shell command that `cd`/`pushd`es into a DIFFERENT git worktree than
 # the session's cwd. This is the Bash-side companion to
@@ -82,8 +82,8 @@ BLOCKED: cross-worktree Bash command.
 
 This command changes directory into a different git worktree, so anything it
 writes lands in the wrong checkout. Re-run it anchored to the session's worktree
-($session_root) instead of cd-ing out. Bypass: disable the hook in
-~/.claude/settings.json or rerun with --dangerously-skip-permissions.
+($session_root) instead of cd-ing out. Bypass by unregistering this hook
+(Claude: ~/.claude/settings.json, pi: ~/.pi/agent/extensions/pretooluse-hooks.ts).
 EOF
   exit 2
 done <<< "$segments"
