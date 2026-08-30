@@ -1,13 +1,15 @@
 ---
 name: agent-code-reviewer
-description: Use to request a SECOND-OPINION review of code, PRs, or architecture from a different model (Gemini or Codex) via `cli/agent_code_reviewer.py`. Reviewer provides feedback only — never writes code. Do NOT use when the user wants Codex (or another model) to **implement, fix, refactor, or write** code; that is the `codex:rescue` skill's job (if the OpenAI Codex plugin is installed).
+description: Use to request a SECOND-OPINION review of code, PRs, or architecture from a different model (Gemini, Codex, or anything on OpenRouter) via `cli/agent_code_reviewer.py`. Reviewer provides feedback only — never writes code. Do NOT use when the user wants Codex (or another model) to **implement, fix, refactor, or write** code; that is the `codex:rescue` skill's job (if the OpenAI Codex plugin is installed).
 ---
 
 # Agent Code Reviewer
 
 ## Overview
 
-`cli/agent_code_reviewer.py` is a Python CLI that lets Claude get a second opinion from Gemini (default) or Codex / GPT. The script handles all the deterministic protocol mechanics: auth, request shape, response parsing, conversation history, `gh` integration for posting inline PR comments. **This skill encodes the judgment layer**: when to invoke it, which provider to pick, how to read the output, when to push back.
+`cli/agent_code_reviewer.py` is a Python CLI that lets Claude get a second opinion from another model. The script handles all the deterministic protocol mechanics: auth, request shape, response parsing, conversation history, `gh` integration for posting inline PR comments. **This skill encodes the judgment layer**: when to invoke it, which model to pick, how to read the output, when to push back.
+
+The available models are data, not code — they live in the roster at `cli/agent_reviewer.toml`, keyed by a short slug you pass to `--model`. **Run `uv run cli/agent_code_reviewer.py --list` before picking one**: rosters differ per project, and the listing shows which entries actually have their API key set. Never assume a key exists because it existed in another repo.
 
 Flag enumeration, env-var setup, and exit codes live in the script's `--help` and module docstring — read those once at the source; do not paraphrase them here.
 
@@ -35,19 +37,18 @@ Do NOT use it for:
 - One-line bug fixes with obvious correctness.
 - Generic "is this code OK?" without a specific question — reviewers without a sharp prompt return generic noise.
 
-## Picking a provider
+## Picking a model
 
-The judgment, not a flag table:
+Read the roster first (`--list`), then apply judgment. The keys below are the shipped defaults; a project may have renamed or replaced them.
 
-- **Gemini** (default): generally faster turnaround and cheaper, strong at line-level diff review. Default for routine `--pr` reviews and quick sanity passes.
-- **Codex** (GPT-5.6): better at architecture-level critique on novel subsystems; stronger at spotting subtle invariants in tightly coupled modules. Reach for it when the diff is _small but conceptually load-bearing_ — e.g., a new lock-free data structure, a security boundary, a non-obvious algorithm.
+- **A deep model from a different family than the code's author.** The entire value of a second opinion is a different prior. Reviewing Claude-written code with the roster's Gemini or Grok entry beats any same-family pairing.
+- **Frontier / "pro" tier for anything load-bearing**: architecture review, security boundaries, migrations, novel subsystems. This is the common case — superficial reviews are rarely worth the tokens.
+- **A lite tier** (e.g. `gemini-lite`) only for: diffs under ~200 lines, sanity passes on routine refactors, fast iteration loops where you'll run the reviewer several times. Never for architecture review, security audits, or when the model is the only second pair of eyes.
+- **Reach past the default** when the diff is _small but conceptually load-bearing_ — a lock-free data structure, a security boundary, a non-obvious algorithm. A second, differently-familied opinion on the same diff is cheap insurance there.
 
-`--lite` rationale:
+If you're unsure, omit `--model` — the roster's `default` is set to the deep model the project trusts most.
 
-- Use the lite (`flash-lite` / `gpt-5.4-mini`) variant for: diffs under ~200 lines, sanity passes on routine refactors, fast iteration loops where you'll run the reviewer multiple times.
-- Don't use lite for: architecture review, security audits, anything where the model is the only second pair of eyes.
-
-If you're unsure, default to Gemini full-model — the script's defaults match this.
+Never edit `cli/agent_reviewer.toml` to add a model unless the user asked. Adding an entry commits a model choice to the repo for every future run.
 
 ## Reading reviewer output
 
@@ -82,7 +83,7 @@ When _they're right_, fix the code and reply to the PR comment with `**[CLAUDE]*
 
 ## Conversation history hygiene
 
-- The script auto-persists per-provider history. Default is fine for most flows.
+- The script auto-persists history per roster entry (`/tmp/agent_reviewer_<key>.json`), so switching `--model` starts a clean thread rather than inheriting the other model's context. Default is fine for most flows.
 - Pass `--session <uuid>` when you start a new logical task to avoid stale context bleeding into a fresh question. Generate one UUID per Claude conversation and reuse it across calls within that conversation.
 - Pass `--reset` if you suspect the history is poisoned (e.g., reviewer fixated on a non-issue, or you switched topics entirely mid-conversation).
 - Long debugging sessions: bump `--ttl` higher (e.g., `--ttl 120`) so context survives a coffee break. Default 30 minutes is sized for tight feedback loops.
@@ -97,5 +98,7 @@ When _they're right_, fix the code and reply to the PR comment with `**[CLAUDE]*
 
 The script's `--help` covers the full env-var list and setup steps. The two non-obvious things worth flagging:
 
-- **API keys live in your shell profile or `~/.claude/settings.json`.** A user without `GEMINI_API_KEY` (or `OPENAI_API_KEY` for Codex) will see a clear error from the script; tell them to set up the key per the script's docstring, do not try to work around it.
+- **Run it with `uv run`.** The script declares its dependencies in a PEP 723 header, so `uv run cli/agent_code_reviewer.py …` resolves them per-run with no venv to manage. Bare `python3` works for every access method except `openrouter`, whose SDK import will fail.
+- **API keys live in your shell profile or `~/.claude/settings.json`**, one per access method: `GEMINI_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`. `--list` shows which are set. A user missing one sees a clear error naming the var; tell them to set it, do not try to work around it.
+- **Exit code 2 means the roster is wrong** (bad TOML, unknown `--model` key), not that the API failed. Fix the invocation or the config — do not retry.
 - **Gemini's free tier rate limits are too low for PR review.** A Tier-1 paid key is the practical minimum. If a user hits rate limits, escalating to paid is the fix, not retry-with-backoff.
