@@ -41,7 +41,7 @@ Do NOT use it for:
 
 Read the roster first (`--list`), then apply judgment. The keys below are the shipped defaults; a project may have renamed or replaced them.
 
-- **A deep model from a different family than the code's author.** The entire value of a second opinion is a different prior. Reviewing Claude-written code with the roster's Gemini or Grok entry beats any same-family pairing.
+- **A deep model from a different family than the code's author.** The entire value of a second opinion is a different prior. Reviewing Claude-written code with the roster's Codex, Gemini, or Grok entry beats any same-family pairing — a roster may also carry Claude entries (`opus`, `haiku`), which are the weakest choice on your own diffs and should be reserved for when the user explicitly wants Claude's read.
 - **Frontier / "pro" tier for anything load-bearing**: architecture review, security boundaries, migrations, novel subsystems. This is the common case — superficial reviews are rarely worth the tokens.
 - **A lite tier** (e.g. `gemini-lite`) only for: diffs under ~200 lines, sanity passes on routine refactors, fast iteration loops where you'll run the reviewer several times. Never for architecture review, security audits, or when the model is the only second pair of eyes.
 - **Reach past the default** when the diff is _small but conceptually load-bearing_ — a lock-free data structure, a security boundary, a non-obvious algorithm. A second, differently-familied opinion on the same diff is cheap insurance there.
