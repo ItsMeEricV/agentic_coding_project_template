@@ -1,92 +1,76 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["openrouter"]
+# ///
 """
-agent_code_reviewer.py — Multi-provider code reviewer (Gemini + Codex)
+agent_code_reviewer.py — Config-driven second-opinion code reviewer
 
 Used by Claude as a collaboration tool to get architecture reviews, edge case
 audits, and second opinions from another model. Claude is the sole code writer —
-the reviewer provides feedback only. Pick a provider with `--provider {gemini,
-codex}` (default: gemini; override with AGENT_REVIEWER_PROVIDER).
+the reviewer provides feedback only.
+
+The available models are data, not code: they live in the roster at
+`cli/agent_reviewer.toml` next to this script. Each entry declares a `key`
+(passed to --model), an `access_method` (which API to speak), and an `id` (the
+model identifier that API expects). Add a model by editing the roster; adding a
+new *access method* is the only change that needs Python.
+
+  uv run cli/agent_code_reviewer.py --list        # resolved roster + key status
 
 Setup:
-  Gemini path:
-    1. https://aistudio.google.com/api-keys → create a Tier 1 key
-       (free tier rate limits are too low for PR review)
-    2. Set GEMINI_API_KEY in shell profile or ~/.claude/settings.json
-  Codex path (OpenAI Responses API):
-    1. https://platform.openai.com/api-keys → create a key
-    2. Set OPENAI_API_KEY in your shell profile or ~/.claude/settings.json
-
-Model Selection:
-  Default on both providers is the deep / Pro model — superficial reviews
-  are rarely worth running. Pass `--lite` to drop to the cheap variant.
-
-  Gemini:
-    - gemini-3.1-pro-preview (default)
-    - gemini-3.1-flash-lite-preview (--lite)
-  Codex:
-    - gpt-5.6 (default; alias routes to gpt-5.6-sol)
-    - gpt-5.4-mini (--lite)
-
-  Override the auto-pick via GEMINI_MODEL / CODEX_MODEL.
+  Only the access methods you actually use need a key.
+    gemini_api  GEMINI_API_KEY
+                https://aistudio.google.com/api-keys → create a Tier 1 key
+                (free-tier rate limits are too low for PR review)
+    openai_api  OPENAI_API_KEY
+                https://platform.openai.com/api-keys
+    openrouter  OPENROUTER_API_KEY
+                https://openrouter.ai/keys
 
 PR Review Mode (--pr):
-  Fetches the PR diff via `gh`, sends it to the chosen provider for line-level
+  Fetches the PR diff via `gh`, sends it to the selected model for line-level
   review, and posts comments directly on the PR as inline review comments.
-  Comment attribution tag is `**[GEMINI]**` or `**[CODEX]**` per provider.
+  Each comment is prefixed with the entry's attribution tag, e.g. **[GEMINI]**.
 
-    python3 cli/agent_code_reviewer.py --pr 60
-    python3 cli/agent_code_reviewer.py --pr 60 --lite    # cheap variant
-    python3 cli/agent_code_reviewer.py --provider codex --pr 60
+    uv run cli/agent_code_reviewer.py --pr 60
+    uv run cli/agent_code_reviewer.py --model codex --pr 60
 
 Conversation History:
-  - Per-provider files under /tmp/ (gemini_conversation.json,
-    codex_conversation.json — override via GEMINI_HISTORY_FILE /
-    CODEX_HISTORY_FILE).
+  - One file per roster entry: /tmp/agent_reviewer_<key>.json
   - Persists across invocations; cleared on system reboot or via --reset.
-  - --history prints the full conversation history as formatted JSON.
-  - Gemini is stateless: full message history is replayed every turn.
-  - Codex is stateful: only the latest user message is sent; OpenAI maintains
-    the chain server-side via `previous_response_id`. The local file stores
-    the last response id so the next turn can reference it.
-
-Session Management:
-  Sessions prevent history bloat during multi-turn collaborations.
-  - --session <id>: Scope history to a session ID (e.g. a UUID). When the
-    session changes, old history is discarded. Claude generates a UUID per
-    conversation and passes it here for automatic scoping.
-  - --ttl <minutes>: Prune history entries older than N minutes (default: 30).
-    For Codex (stateful), TTL expiry discards the server-side chain reference,
-    so the next turn starts a new chain. Set to 0 to disable TTL pruning.
-  - When --session is used WITH --ttl (the default), both apply: session
-    mismatch discards everything, then TTL prunes old entries within the session.
+  - --history prints the selected entry's history as formatted JSON.
+  - TTL-pruned (default 30 min, --ttl 0 disables) and optionally scoped to a
+    --session id. A session mismatch discards the whole file rather than
+    replaying a prior run's diff into an unrelated call.
 
 Usage:
-  python3 cli/agent_code_reviewer.py "Your question here"
-  python3 cli/agent_code_reviewer.py --provider codex "Same question via Codex"
-  python3 cli/agent_code_reviewer.py --file path/to/file.ts "Review this code"
-  python3 cli/agent_code_reviewer.py --lite "Quick sanity check"
-  python3 cli/agent_code_reviewer.py --pr 60 "Focus on error handling"
-  python3 cli/agent_code_reviewer.py --provider codex --pr 60
-  python3 cli/agent_code_reviewer.py --reset "Start fresh conversation"
-  python3 cli/agent_code_reviewer.py --session abc123 "Scoped to this session"
-  python3 cli/agent_code_reviewer.py --ttl 60 "Keep history for 1 hour"
-  python3 cli/agent_code_reviewer.py --ttl 0 "Disable TTL pruning"
-  python3 cli/agent_code_reviewer.py --system "You are a security auditor" "Check for XSS"
-  python3 cli/agent_code_reviewer.py --history
+  uv run cli/agent_code_reviewer.py "Your question here"
+  uv run cli/agent_code_reviewer.py --model codex "Same question via Codex"
+  uv run cli/agent_code_reviewer.py --file path/to/file.ts "Review this code"
+  uv run cli/agent_code_reviewer.py --pr 60 "Focus on error handling"
+  uv run cli/agent_code_reviewer.py --model grok --pr 60
+  uv run cli/agent_code_reviewer.py --reset "Start fresh conversation"
+  uv run cli/agent_code_reviewer.py --session abc123 "Scoped to this session"
+  uv run cli/agent_code_reviewer.py --ttl 60 "Keep history for 1 hour"
+  uv run cli/agent_code_reviewer.py --system "You are a security auditor" "Check for XSS"
+  uv run cli/agent_code_reviewer.py --list --verbose
+
+  Running under bare `python3` works for every access method except
+  `openrouter`, whose SDK import is deferred until that adapter is used.
 
 Environment:
-  AGENT_REVIEWER_PROVIDER  — Optional. Default provider when --provider absent.
-  AGENT_REVIEWER_SYSTEM_PROMPT — Optional. Provider-agnostic system prompt
-                             override (falls back to GEMINI_SYSTEM_PROMPT).
-  Gemini path:
-    GEMINI_API_KEY         — Required for --provider gemini.
-    GEMINI_MODEL           — Optional. Override model selection.
-    GEMINI_HISTORY_FILE    — Optional. Default: /tmp/gemini_conversation.json
-    GEMINI_SYSTEM_PROMPT   — Optional. Legacy provider-agnostic alias.
-  Codex path:
-    OPENAI_API_KEY         — Required for --provider codex.
-    CODEX_MODEL            — Optional. Override model selection.
-    CODEX_HISTORY_FILE     — Optional. Default: /tmp/codex_conversation.json
+  GEMINI_API_KEY               — Required for gemini_api entries.
+  OPENAI_API_KEY               — Required for openai_api entries.
+  OPENROUTER_API_KEY           — Required for openrouter entries.
+  AGENT_REVIEWER_SYSTEM_PROMPT — Optional. System prompt override
+                                 (falls back to GEMINI_SYSTEM_PROMPT).
+
+Exit codes:
+  0  success
+  1  API error, missing API key, or a `gh` operation failed
+  2  roster problem: unreadable/invalid agent_reviewer.toml, or --model naming
+     a key that does not exist
 """
 
 from __future__ import annotations
@@ -99,11 +83,15 @@ import re
 import subprocess
 import sys
 import time
+import tomllib
 import urllib.request
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from pathlib import Path
 
 # --- Config ---
+
+CONFIG_PATH: Path = Path(__file__).resolve().parent / "agent_reviewer.toml"
 
 DEFAULT_TTL_MINUTES: int = 30
 
@@ -157,19 +145,181 @@ DEFAULT_IGNORE_PATHS: list[str] = [
 
 
 # ---------------------------------------------------------------------------
-# Provider abstraction
+# Roster
 # ---------------------------------------------------------------------------
 #
-# Each provider owns its message format, history-file layout, API endpoint,
-# and response parsing. The only shared surface is what main() needs to run a
-# turn-and-save cycle. CodexProvider lands in the next commit; today only
-# GeminiProvider is wired up.
+# The set of reviewable models is data, loaded from agent_reviewer.toml. An
+# entry's `access_method` IS its wire protocol — `id` alone cannot tell the
+# script whether to speak Gemini's generateContent or OpenAI's Responses API,
+# and inferring it from the model id would break the first time a vendor
+# renames a family.
+
+ACCESS_METHODS: tuple[str, ...] = ("gemini_api", "openai_api", "openrouter")
+
+REQUIRED_FIELDS: tuple[str, ...] = ("key", "name", "access_method", "id")
+OPTIONAL_FIELDS: tuple[str, ...] = ("tag", "store")
 
 
-class Provider(ABC):
-    """Strategy interface for a single non-Claude reviewer backend."""
+class ConfigError(Exception):
+    """Roster missing, unreadable, or invalid. main() exits 2 on these."""
 
-    name: str = ""
+
+@dataclass(frozen=True)
+class ModelEntry:
+    """One [[models]] table from the roster."""
+
+    key: str
+    name: str
+    access_method: str
+    id: str
+    tag: str
+    store: bool = False
+
+
+@dataclass(frozen=True)
+class Roster:
+    entries: list[ModelEntry]
+    default_key: str
+
+    def get(self, key: str) -> ModelEntry:
+        for entry in self.entries:
+            if entry.key == key:
+                return entry
+        valid = ", ".join(e.key for e in self.entries)
+        raise ConfigError(f"unknown model {key!r}; valid keys: {valid}")
+
+    def default_entry(self) -> ModelEntry:
+        return self.get(self.default_key)
+
+
+def parse_config(raw: dict) -> Roster:
+    """Validate a parsed roster. Pure — takes the toml dict, not a path.
+
+    Strict on purpose: this file is hand-edited, and a silently-ignored typo
+    (`tags = "GEMINI"`) would surface much later as a wrong PR comment."""
+    default = raw.get("default")
+    if not isinstance(default, str) or not default:
+        raise ConfigError("roster needs a top-level `default = \"<key>\"`")
+
+    models = raw.get("models")
+    if not isinstance(models, list) or not models:
+        raise ConfigError("roster needs at least one [[models]] entry")
+
+    entries: list[ModelEntry] = []
+    seen: set[str] = set()
+    for i, model in enumerate(models):
+        where = f"[[models]] #{i + 1}"
+        if not isinstance(model, dict):
+            raise ConfigError(f"{where}: not a table")
+
+        for field in REQUIRED_FIELDS:
+            value = model.get(field)
+            if not isinstance(value, str) or not value:
+                raise ConfigError(f"{where}: missing or empty required field `{field}`")
+
+        unknown = set(model) - set(REQUIRED_FIELDS) - set(OPTIONAL_FIELDS)
+        if unknown:
+            allowed = ", ".join(REQUIRED_FIELDS + OPTIONAL_FIELDS)
+            raise ConfigError(
+                f"{where}: unknown field(s) {', '.join(sorted(unknown))}; allowed: {allowed}"
+            )
+
+        key = model["key"]
+        if key in seen:
+            raise ConfigError(f"{where}: duplicate key {key!r}")
+        seen.add(key)
+
+        access_method = model["access_method"]
+        if access_method not in ACCESS_METHODS:
+            raise ConfigError(
+                f"{where}: unknown access_method {access_method!r}; "
+                f"expected one of {', '.join(ACCESS_METHODS)}"
+            )
+
+        tag = model.get("tag", key.upper())
+        if not isinstance(tag, str) or not tag:
+            raise ConfigError(f"{where}: `tag` must be a non-empty string")
+
+        store = model.get("store", False)
+        if not isinstance(store, bool):
+            raise ConfigError(f"{where}: `store` must be a boolean")
+        if store and access_method != "openai_api":
+            raise ConfigError(
+                f"{where}: `store` is only valid on openai_api entries "
+                f"(this one is {access_method})"
+            )
+
+        entries.append(
+            ModelEntry(
+                key=key,
+                name=model["name"],
+                access_method=access_method,
+                id=model["id"],
+                tag=tag,
+                store=store,
+            )
+        )
+
+    if default not in seen:
+        raise ConfigError(
+            f"default {default!r} matches no entry; valid keys: {', '.join(sorted(seen))}"
+        )
+    return Roster(entries=entries, default_key=default)
+
+
+def load_config(path: Path = CONFIG_PATH) -> Roster:
+    try:
+        raw = tomllib.loads(path.read_text())
+    except FileNotFoundError:
+        raise ConfigError(f"roster not found: {path}") from None
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError(f"{path}: invalid TOML: {exc}") from None
+    return parse_config(raw)
+
+
+def format_roster(roster: Roster, verbose: bool = False) -> str:
+    """--list output: what is available and what is actually usable today."""
+    rows = []
+    for entry in roster.entries:
+        adapter = make_adapter(entry)
+        marker = "*" if entry.key == roster.default_key else " "
+        row = [
+            f"{entry.key}{marker}",
+            entry.access_method,
+            entry.id,
+            "set" if adapter.api_key() else f"MISSING {adapter.api_key_env_var()}",
+        ]
+        if verbose:
+            row.insert(1, entry.name)
+            row.append(f"[{entry.tag}]")
+        rows.append(row)
+
+    headers = ["KEY", "ACCESS", "ID", "API KEY"]
+    if verbose:
+        headers.insert(1, "NAME")
+        headers.append("TAG")
+    widths = [max(len(r[i]) for r in [headers] + rows) for i in range(len(headers))]
+    lines = ["  ".join(h.ljust(w) for h, w in zip(headers, widths)).rstrip()]
+    lines += ["  ".join(c.ljust(w) for c, w in zip(r, widths)).rstrip() for r in rows]
+    lines.append("")
+    lines.append("* = default")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Access-method adapters
+# ---------------------------------------------------------------------------
+#
+# Each adapter owns its message format, API endpoint, and response parsing for
+# one access method. The only shared surface is what main() needs to run a
+# turn-and-save cycle. History-file layout is shared: one file per roster entry.
+
+
+class Adapter(ABC):
+    """Strategy interface for one access method, bound to one roster entry."""
+
+    def __init__(self, entry: ModelEntry) -> None:
+        self.entry = entry
 
     @abstractmethod
     def api_key(self) -> str | None:
@@ -177,13 +327,7 @@ class Provider(ABC):
 
     @abstractmethod
     def api_key_env_var(self) -> str:
-        """Primary env var name (for error messages)."""
-
-    @abstractmethod
-    def history_file(self) -> Path: ...
-
-    @abstractmethod
-    def select_model(self, use_lite: bool) -> str: ...
+        """Env var name holding this access method's key (for error messages)."""
 
     @abstractmethod
     def add_message(
@@ -194,16 +338,20 @@ class Provider(ABC):
     def build_request(self, system_prompt: str, history: list[dict]) -> dict: ...
 
     @abstractmethod
-    def call_api(self, model: str, request_body: dict) -> dict: ...
+    def call_api(self, request_body: dict) -> dict: ...
 
     @abstractmethod
     def extract_response(self, data: dict) -> tuple[str, str]:
-        """Returns (visible_text, opaque_signature). Signature is provider-
+        """Returns (visible_text, opaque_signature). Signature is access-method
         specific and threaded back into the next turn's history record."""
 
-    # Shared history-file ops. The on-disk shape is the same across providers
+    # Shared history-file ops. The on-disk shape is the same everywhere
     # (entries list + session + per-entry timestamps); only the per-entry
-    # `message` payload is provider-flavored.
+    # `message` payload is access-method-flavored. Scoped by roster key so
+    # switching models never replays another model's conversation.
+
+    def history_file(self) -> Path:
+        return Path(f"/tmp/agent_reviewer_{self.entry.key}.json")
 
     def load_history_raw(self) -> dict:
         hf = self.history_file()
@@ -221,8 +369,7 @@ class Provider(ABC):
         # Clear on any session mismatch, including the case where the caller
         # omits --session but the saved history was scoped to one. Without
         # this, a prior `--session abc` run's entries (a diff, a prompt) would
-        # silently replay into the next un-scoped call and leak back to the
-        # provider.
+        # silently replay into the next un-scoped call and leak back out.
         if raw.get("session") != session:
             return []
         entries: list[dict] = raw.get("entries", [])
@@ -251,25 +398,14 @@ class Provider(ABC):
         self.history_file().write_text(json.dumps({}))
 
 
-class GeminiProvider(Provider):
-    name = "gemini"
-    MODEL_LITE = "gemini-3.1-flash-lite-preview"
-    MODEL_PRO = "gemini-3.1-pro-preview"
+class GeminiAdapter(Adapter):
+    """Google Gemini generateContent API."""
 
     def api_key(self) -> str | None:
         return os.environ.get("GEMINI_API_KEY") or None
 
     def api_key_env_var(self) -> str:
         return "GEMINI_API_KEY"
-
-    def history_file(self) -> Path:
-        return Path(os.environ.get("GEMINI_HISTORY_FILE", "/tmp/gemini_conversation.json"))
-
-    def select_model(self, use_lite: bool) -> str:
-        override = os.environ.get("GEMINI_MODEL")
-        if override:
-            return override
-        return self.MODEL_LITE if use_lite else self.MODEL_PRO
 
     def add_message(
         self, history: list[dict], role: str, text: str, signature: str = ""
@@ -286,10 +422,10 @@ class GeminiProvider(Provider):
             "contents": history,
         }
 
-    def call_api(self, model: str, request_body: dict) -> dict:
+    def call_api(self, request_body: dict) -> dict:
         key = self.api_key()
         url = (
-            f"https://generativelanguage.googleapis.com/v1beta/models/{model}"
+            f"https://generativelanguage.googleapis.com/v1beta/models/{self.entry.id}"
             f":generateContent?key={key}"
         )
         data = json.dumps(request_body).encode("utf-8")
@@ -300,7 +436,6 @@ class GeminiProvider(Provider):
             return json.loads(resp.read())
 
     def extract_response(self, data: dict) -> tuple[str, str]:
-        # OpenAI returns `"error": null` on success; only treat truthy as a failure.
         if data.get("error"):
             msg = data["error"].get("message", "unknown error")
             print(f"API Error: {msg[:200]}", file=sys.stderr)
@@ -312,15 +447,15 @@ class GeminiProvider(Provider):
         return text, signature
 
 
-class CodexProvider(Provider):
-    """OpenAI Responses API backend.
+class OpenAIAdapter(Adapter):
+    """OpenAI Responses API.
 
     Default mode is **stateless**: each call sets `store: false`, so no
     prompt/diff/file payload is persisted on OpenAI's side. This matches
     the Gemini path's privacy model and is the right default for `--pr`
     reviews, where the diff often contains private source.
 
-    Opt-in stateful chaining: set `CODEX_STORE=1` in the environment.
+    Opt-in stateful chaining: set `store = true` on the roster entry.
     With that, each session becomes a chain of `previous_response_id`
     references the server maintains, and only the last response id is
     persisted locally. Useful for `--session <id>` multi-turn work where
@@ -330,11 +465,8 @@ class CodexProvider(Provider):
     Local-store entries are kept for `--history` display + TTL bookkeeping
     regardless of mode."""
 
-    name = "codex"
-    MODEL_LITE = "gpt-5.4-mini"
-    MODEL_PRO = "gpt-5.6"
-
-    def __init__(self) -> None:
+    def __init__(self, entry: ModelEntry) -> None:
+        super().__init__(entry)
         # Populated by load_history(); read by build_request().
         self._last_response_id: str | None = None
 
@@ -343,15 +475,6 @@ class CodexProvider(Provider):
 
     def api_key_env_var(self) -> str:
         return "OPENAI_API_KEY"
-
-    def history_file(self) -> Path:
-        return Path(os.environ.get("CODEX_HISTORY_FILE", "/tmp/codex_conversation.json"))
-
-    def select_model(self, use_lite: bool) -> str:
-        override = os.environ.get("CODEX_MODEL")
-        if override:
-            return override
-        return self.MODEL_LITE if use_lite else self.MODEL_PRO
 
     def load_history(
         self, session: str | None = None, ttl_minutes: int = DEFAULT_TTL_MINUTES
@@ -383,16 +506,16 @@ class CodexProvider(Provider):
     def build_request(self, system_prompt: str, history: list[dict]) -> dict:
         # Two modes:
         #
-        # 1. Stateless (default, CODEX_STORE unset/!=1): replay the full local
-        #    history as `input[]` each turn — same shape Gemini uses. OpenAI
-        #    does not retain anything (`store: false`). --session multi-turn
-        #    context is preserved client-side via /tmp/codex_conversation.json.
+        # 1. Stateless (default, store = false): replay the full local history
+        #    as `input[]` each turn — same shape Gemini uses. OpenAI does not
+        #    retain anything. --session multi-turn context is preserved
+        #    client-side in the entry's history file.
         #
-        # 2. Stateful (opt-in, CODEX_STORE=1): send only the latest user
+        # 2. Stateful (opt-in, store = true): send only the latest user
         #    message + `previous_response_id`; the server walks the chain it
         #    retained. Cheaper per-turn (no transcript re-send) at the cost
         #    of server-side retention of all prior payloads.
-        store = os.environ.get("CODEX_STORE") == "1"
+        store = self.entry.store
         body: dict = {
             "instructions": system_prompt,
             "store": store,
@@ -419,11 +542,11 @@ class CodexProvider(Provider):
             ]
         return body
 
-    def call_api(self, model: str, request_body: dict) -> dict:
+    def call_api(self, request_body: dict) -> dict:
         key = self.api_key()
         url = "https://api.openai.com/v1/responses"
         body = dict(request_body)
-        body["model"] = model
+        body["model"] = self.entry.id
         data = json.dumps(body).encode("utf-8")
         req = urllib.request.Request(
             url,
@@ -454,12 +577,80 @@ class CodexProvider(Provider):
         return text, response_id
 
 
-def make_provider(name: str) -> Provider:
-    if name == "gemini":
-        return GeminiProvider()
-    if name == "codex":
-        return CodexProvider()
-    raise ValueError(f"Unknown provider: {name!r}")
+class OpenRouterAdapter(Adapter):
+    """OpenRouter, via the `openrouter` SDK.
+
+    Stateless: OpenRouter has no server-side conversation chaining, so the
+    full local transcript is replayed as `messages` every turn — the same
+    shape the OpenAI adapter uses in its default mode. No signature is
+    threaded back, so multi-turn history is purely client-side."""
+
+    def api_key(self) -> str | None:
+        return os.environ.get("OPENROUTER_API_KEY") or None
+
+    def api_key_env_var(self) -> str:
+        return "OPENROUTER_API_KEY"
+
+    def add_message(
+        self, history: list[dict], role: str, text: str, signature: str = ""
+    ) -> list[dict]:
+        history.append({"role": role, "text": text})
+        return history
+
+    def build_request(self, system_prompt: str, history: list[dict]) -> dict:
+        def to_chat_role(role: str) -> str:
+            return "assistant" if role == "model" else role
+
+        messages = [{"role": "system", "content": system_prompt}]
+        messages += [
+            {"role": to_chat_role(msg["role"]), "content": msg.get("text", "")}
+            for msg in history
+            if msg.get("role") in ("user", "assistant", "model")
+        ]
+        return {"messages": messages}
+
+    def call_api(self, request_body: dict) -> dict:
+        # Deferred import: the SDK is declared in this script's PEP 723 header,
+        # but the two direct adapters must keep working under a bare `python3`
+        # with nothing installed.
+        try:
+            from openrouter import OpenRouter
+        except ImportError:
+            print(
+                "Error: the openrouter access method needs the SDK. Run this "
+                "script with `uv run` (which installs it from the PEP 723 "
+                "header), or `pip install openrouter`.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        # timeout_ms matches the 300s the urllib adapters pass to urlopen.
+        with OpenRouter(api_key=self.api_key(), timeout_ms=300_000) as client:
+            response = client.chat.send(
+                model=self.entry.id, messages=request_body["messages"]
+            )
+        return {"text": response.choices[0].message.content or ""}
+
+    def extract_response(self, data: dict) -> tuple[str, str]:
+        return data.get("text", ""), ""
+
+
+ADAPTERS: dict[str, type[Adapter]] = {
+    "gemini_api": GeminiAdapter,
+    "openai_api": OpenAIAdapter,
+    "openrouter": OpenRouterAdapter,
+}
+
+
+def make_adapter(entry: ModelEntry) -> Adapter:
+    try:
+        return ADAPTERS[entry.access_method](entry)
+    except KeyError:
+        # parse_config validates the enum, so reaching here means a new
+        # access_method was added to ACCESS_METHODS without an adapter.
+        raise ConfigError(
+            f"no adapter registered for access_method {entry.access_method!r}"
+        ) from None
 
 
 # ---------------------------------------------------------------------------
@@ -665,8 +856,9 @@ def post_pr_review(
     diff: str = "",
 ) -> None:
     """Post a review with inline comments on the PR using gh API. The
-    `attribution` tag (e.g. "GEMINI" / "CODEX") prefixes every comment + the
-    review body so reviewers can tell at a glance which model authored each.
+    `attribution` tag (the roster entry's `tag`, e.g. "GEMINI") prefixes every
+    comment + the review body so reviewers can tell at a glance which model
+    authored each.
 
     Comments whose (path, line) pair isn't a valid RIGHT-side anchor in the
     PR diff get bucketed into the review body's "Additional comments"
@@ -816,13 +1008,15 @@ def post_pr_review(
 
 def review_pr(
     pr_number: str,
-    provider: Provider,
-    model: str,
+    adapter: Adapter,
     extra_instructions: str = "",
     ignore_paths: list[str] | None = None,
 ) -> None:
     """Full PR review flow: fetch diff → filter ignored paths → review → post."""
-    print(f"--> Reviewing PR #{pr_number} with {model}", file=sys.stderr)
+    print(
+        f"--> Reviewing PR #{pr_number} with {adapter.entry.name} ({adapter.entry.id})",
+        file=sys.stderr,
+    )
 
     diff = get_pr_diff(pr_number)
     if not diff.strip():
@@ -881,10 +1075,10 @@ def review_pr(
 
     # Single-turn review — no persisted history.
     history: list[dict] = []
-    history = provider.add_message(history, "user", prompt)
-    request_body = provider.build_request(PR_REVIEW_SYSTEM_PROMPT, history)
-    response_data = provider.call_api(model, request_body)
-    text, _ = provider.extract_response(response_data)
+    history = adapter.add_message(history, "user", prompt)
+    request_body = adapter.build_request(PR_REVIEW_SYSTEM_PROMPT, history)
+    response_data = adapter.call_api(request_body)
+    text, _ = adapter.extract_response(response_data)
 
     # Parse JSON response
     try:
@@ -899,7 +1093,7 @@ def review_pr(
         print("Response not valid JSON, posting as summary:", file=sys.stderr)
         print(text, file=sys.stderr)
         # Post raw text as review body
-        post_pr_review(pr_number, text, [], attribution=provider.name.upper())
+        post_pr_review(pr_number, text, [], attribution=adapter.entry.tag)
         return
 
     summary = review.get("summary", "No summary provided.")
@@ -914,7 +1108,7 @@ def review_pr(
         pr_number,
         summary,
         comments,
-        attribution=provider.name.upper(),
+        attribution=adapter.entry.tag,
         diff=full_diff_for_anchors,
     )
     print(f"--> Review posted to PR #{pr_number}", file=sys.stderr)
@@ -926,22 +1120,32 @@ def review_pr(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Multi-provider code reviewer (Gemini + Codex)")
+    parser = argparse.ArgumentParser(
+        description="Config-driven second-opinion code reviewer. "
+        f"Models are declared in {CONFIG_PATH.name} next to this script; "
+        "run --list to see them."
+    )
     parser.add_argument("message", nargs="?", default="", help="Message to send")
     parser.add_argument(
-        "--provider",
-        choices=["gemini", "codex"],
-        default=os.environ.get("AGENT_REVIEWER_PROVIDER", "gemini"),
-        help="Reviewer backend (default: gemini; AGENT_REVIEWER_PROVIDER env var overrides default).",
+        "--model",
+        dest="model_key",
+        default="",
+        metavar="KEY",
+        help="Roster key of the model to use (default: the roster's `default`). See --list.",
+    )
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        help="List the roster (key, access method, model id, whether its API key is set) and exit.",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="With --list, also show each entry's full name and attribution tag.",
     )
     parser.add_argument("--file", dest="file_path", default="", help="Attach file content")
     parser.add_argument(
         "--system", dest="system_prompt", default="", help="Override system prompt"
-    )
-    parser.add_argument(
-        "--lite",
-        action="store_true",
-        help="Use the lighter/cheaper model. Default is the deep/Pro model on each provider.",
     )
     parser.add_argument("--pr", dest="pr_number", default="", help="Review a GitHub PR by number")
     parser.add_argument(
@@ -965,16 +1169,28 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    provider: Provider = make_provider(args.provider)
+    # Roster problems are exit 2 — distinct from an API failure (1), so a
+    # caller can tell "you configured it wrong" from "the model call failed".
+    try:
+        roster = load_config()
+        if args.list:
+            print(format_roster(roster, verbose=args.verbose))
+            return
+        entry = roster.get(args.model_key) if args.model_key else roster.default_entry()
+    except ConfigError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+    adapter = make_adapter(entry)
 
     # Offline operations first — these are pure local file ops and must not
     # require an API key. A user setting up the script for the first time
     # may legitimately want to inspect or wipe history before configuring
-    # GEMINI_API_KEY / OPENAI_API_KEY.
+    # any provider key.
 
     # Show history and exit
     if args.history:
-        raw = provider.load_history_raw()
+        raw = adapter.load_history_raw()
         print(json.dumps(raw, indent=2))
         return
 
@@ -987,25 +1203,28 @@ def main() -> None:
     # Standalone --reset (no message) is also offline — clear and exit
     # without requiring an API key.
     if args.reset and not message and not args.pr_number:
-        provider.reset_history()
-        print("History reset.", file=sys.stderr)
+        adapter.reset_history()
+        print(f"History reset for {entry.key}.", file=sys.stderr)
         return
 
-    # Anything past this point will call the provider's API.
-    if not provider.api_key():
-        print(f"Error: {provider.api_key_env_var()} not set.", file=sys.stderr)
+    # Anything past this point will call the model's API.
+    if not adapter.api_key():
+        print(
+            f"Error: {adapter.api_key_env_var()} not set "
+            f"(required by model {entry.key!r}, access_method {entry.access_method}).",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     # PR review mode
     if args.pr_number:
-        model = provider.select_model(use_lite=args.lite)
         ignore_paths = list(DEFAULT_IGNORE_PATHS) + args.ignore_paths
-        review_pr(args.pr_number, provider, model, args.message, ignore_paths=ignore_paths)
+        review_pr(args.pr_number, adapter, args.message, ignore_paths=ignore_paths)
         return
 
     # --reset combined with a message: reset first, then proceed to send.
     if args.reset:
-        provider.reset_history()
+        adapter.reset_history()
 
     if not message:
         parser.print_help()
@@ -1020,9 +1239,7 @@ def main() -> None:
             sys.exit(1)
         file_content = path.read_text()
 
-    # Select model
-    model = provider.select_model(use_lite=args.lite)
-    print(f"--> Model: {model}", file=sys.stderr)
+    print(f"--> Model: {entry.name} ({entry.id})", file=sys.stderr)
 
     # Build full message
     full_message = message
@@ -1040,10 +1257,10 @@ def main() -> None:
     # Load history (filtered by session + TTL)
     session = args.session or None
     ttl = args.ttl_minutes
-    history = provider.load_history(session=session, ttl_minutes=ttl)
+    history = adapter.load_history(session=session, ttl_minutes=ttl)
 
     # Preserve timestamps from surviving entries for re-save
-    raw = provider.load_history_raw()
+    raw = adapter.load_history_raw()
     old_entries = raw.get("entries", [])
     # After load_history filtering, we have len(history) surviving messages.
     # Grab their timestamps (from the tail of old_entries that survived).
@@ -1055,10 +1272,9 @@ def main() -> None:
             e["timestamp"] for e in old_entries if e.get("timestamp", 0) >= cutoff
         ]
 
-    history = provider.add_message(history, "user", full_message)
+    history = adapter.add_message(history, "user", full_message)
     surviving_timestamps.append(time.time())
 
-    # System prompt — provider-agnostic env var with legacy fallback.
     system_prompt = (
         args.system_prompt
         or os.environ.get("AGENT_REVIEWER_SYSTEM_PROMPT")
@@ -1067,16 +1283,16 @@ def main() -> None:
     )
 
     # API call
-    request_body = provider.build_request(system_prompt, history)
-    response_data = provider.call_api(model, request_body)
+    request_body = adapter.build_request(system_prompt, history)
+    response_data = adapter.call_api(request_body)
 
     # Parse response
-    text, signature = provider.extract_response(response_data)
+    text, signature = adapter.extract_response(response_data)
 
     # Save to history
-    history = provider.add_message(history, "model", text, signature)
+    history = adapter.add_message(history, "model", text, signature)
     surviving_timestamps.append(time.time())
-    provider.save_history(history, session=session, timestamps=surviving_timestamps)
+    adapter.save_history(history, session=session, timestamps=surviving_timestamps)
 
     # Output
     print(text)

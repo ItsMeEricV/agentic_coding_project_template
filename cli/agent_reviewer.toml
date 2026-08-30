@@ -1,0 +1,56 @@
+# Model roster for cli/agent_code_reviewer.py.
+#
+# Committed on purpose: a forked project gets a working reviewer with no setup
+# beyond an API key. Contains NO secrets — keys live in env vars, named per
+# access method below.
+#
+# Run `uv run cli/agent_code_reviewer.py --list` to see this file resolved,
+# including which API keys are actually set in your environment.
+
+# Model used when --model is omitted. Must match a key below.
+default = "gemini-pro"
+
+# Each entry declares:
+#   key            short slug passed to --model; also names the entry's history
+#                  file (/tmp/agent_reviewer_<key>.json). Renaming it breaks
+#                  saved invocations — treat it as stable.
+#   name           human label, shown by --list --verbose.
+#   access_method  which API to speak. This IS the wire protocol:
+#                    gemini_api  -> Gemini generateContent   (GEMINI_API_KEY)
+#                    openai_api  -> OpenAI Responses API      (OPENAI_API_KEY)
+#                    openrouter  -> OpenRouter chat.send      (OPENROUTER_API_KEY)
+#   id             model identifier sent to that API.
+#   tag            OPTIONAL. Attribution tag on inline PR comments, per
+#                  AGENTS.md. Defaults to key.upper().
+#   store          OPTIONAL, openai_api only, default false. See below.
+
+[[models]]
+key = "gemini-pro"
+name = "Gemini 3.1 Pro — Google API"
+access_method = "gemini_api"
+id = "gemini-3.1-pro-preview"
+tag = "GEMINI"
+
+[[models]]
+key = "gemini-lite"
+name = "Gemini 3.1 Flash Lite — Google API"
+access_method = "gemini_api"
+id = "gemini-3.1-flash-lite-preview"
+tag = "GEMINI"
+
+[[models]]
+key = "codex"
+name = "Codex GPT 5.6 — OpenAI API"
+access_method = "openai_api"
+id = "gpt-5.6"
+tag = "CODEX"
+# store = true makes OpenAI retain every payload server-side (including private
+# --pr diffs) in exchange for not re-sending the transcript each turn. Only
+# worth it for long --session work. Default false: OpenAI retains nothing.
+store = false
+
+[[models]]
+key = "grok"
+name = "Grok 4.6 — OpenRouter"
+access_method = "openrouter"
+id = "x-ai/grok-4.6"
