@@ -1,6 +1,6 @@
 ---
 name: agent-code-reviewer
-description: Use to request a SECOND-OPINION review of code, PRs, or architecture from a different model (Gemini, Codex, or anything on OpenRouter) via `cli/agent_code_reviewer.py`. Reviewer provides feedback only — never writes code. Do NOT use when the user wants Codex (or another model) to **implement, fix, refactor, or write** code; that is the `codex:rescue` skill's job (if the OpenAI Codex plugin is installed).
+description: Use to request a SECOND-OPINION review of code, PRs, or architecture from a different model (Gemini, Codex, or anything on OpenRouter) via `cli/agent_code_reviewer.py`. Reviewer provides feedback only — never writes code. Do NOT use when the user wants another model to **implement, fix, refactor, or write** code — this skill is review-only.
 ---
 
 # Agent Code Reviewer

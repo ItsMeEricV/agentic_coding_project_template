@@ -16,13 +16,16 @@ default = "codex-sol"
 #                  saved invocations — treat it as stable.
 #   name           human label, shown by --list --verbose.
 #   access_method  which API to speak. This IS the wire protocol:
-#                    gemini_api  -> Gemini generateContent   (GEMINI_API_KEY)
-#                    openai_api  -> OpenAI Responses API      (OPENAI_API_KEY)
 #                    openrouter  -> OpenRouter chat.send      (OPENROUTER_API_KEY)
+#                    gemini_api  -> Gemini generateContent    (GEMINI_API_KEY)
+#                    openai_api  -> OpenAI Responses API      (OPENAI_API_KEY)
 #   id             model identifier sent to that API.
 #   tag            OPTIONAL. Attribution tag on inline PR comments, per
 #                  AGENTS.md. Defaults to key.upper().
-#   store          OPTIONAL, openai_api only, default false. See below.
+#   store          OPTIONAL, openai_api only, default false. Makes OpenAI retain
+#                  every payload server-side (private --pr diffs included) in
+#                  exchange for not re-sending the transcript each turn; only
+#                  worth it for long --session work. No entry uses it today.
 #
 # Entries are listed deepest-first; the cheap ones are at the bottom.
 
@@ -57,19 +60,6 @@ key = "grok"
 name = "Grok 4.6 — OpenRouter"
 access_method = "openrouter"
 id = "x-ai/grok-4.6"
-
-# The roster's only direct-OpenAI entry; keeps the openai_api access method
-# exercised, and reaches OpenAI without OpenRouter in the path.
-[[models]]
-key = "codex"
-name = "Codex GPT 5.6 — OpenAI API"
-access_method = "openai_api"
-id = "gpt-5.6"
-tag = "CODEX"
-# store = true makes OpenAI retain every payload server-side (including private
-# --pr diffs) in exchange for not re-sending the transcript each turn. Only
-# worth it for long --session work. Default false: OpenAI retains nothing.
-store = false
 
 # Cheap tier — sanity passes on small diffs, not architecture or security review.
 [[models]]

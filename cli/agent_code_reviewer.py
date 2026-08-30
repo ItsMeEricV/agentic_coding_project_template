@@ -20,13 +20,13 @@ new *access method* is the only change that needs Python.
 
 Setup:
   Only the access methods you actually use need a key.
+    openrouter  OPENROUTER_API_KEY
+                https://openrouter.ai/keys
     gemini_api  GEMINI_API_KEY
                 https://aistudio.google.com/api-keys → create a Tier 1 key
                 (free-tier rate limits are too low for PR review)
     openai_api  OPENAI_API_KEY
                 https://platform.openai.com/api-keys
-    openrouter  OPENROUTER_API_KEY
-                https://openrouter.ai/keys
 
 PR Review Mode (--pr):
   Fetches the PR diff via `gh`, sends it to the selected model for line-level
@@ -60,9 +60,9 @@ Usage:
   `openrouter`, whose SDK import is deferred until that adapter is used.
 
 Environment:
+  OPENROUTER_API_KEY           — Required for openrouter entries.
   GEMINI_API_KEY               — Required for gemini_api entries.
   OPENAI_API_KEY               — Required for openai_api entries.
-  OPENROUTER_API_KEY           — Required for openrouter entries.
   AGENT_REVIEWER_SYSTEM_PROMPT — Optional. System prompt override
                                  (falls back to GEMINI_SYSTEM_PROMPT).
 
@@ -154,7 +154,7 @@ DEFAULT_IGNORE_PATHS: list[str] = [
 # and inferring it from the model id would break the first time a vendor
 # renames a family.
 
-ACCESS_METHODS: tuple[str, ...] = ("gemini_api", "openai_api", "openrouter")
+ACCESS_METHODS: tuple[str, ...] = ("openrouter", "gemini_api", "openai_api")
 
 REQUIRED_FIELDS: tuple[str, ...] = ("key", "name", "access_method", "id")
 OPTIONAL_FIELDS: tuple[str, ...] = ("tag", "store")
@@ -636,9 +636,9 @@ class OpenRouterAdapter(Adapter):
 
 
 ADAPTERS: dict[str, type[Adapter]] = {
+    "openrouter": OpenRouterAdapter,
     "gemini_api": GeminiAdapter,
     "openai_api": OpenAIAdapter,
-    "openrouter": OpenRouterAdapter,
 }
 
 
