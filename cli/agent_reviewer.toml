@@ -1,0 +1,84 @@
+# Model roster for cli/agent_code_reviewer.py.
+#
+# Committed on purpose: a forked project gets a working reviewer with no setup
+# beyond an API key. Contains NO secrets — keys live in env vars, named per
+# access method below.
+#
+# Run `uv run cli/agent_code_reviewer.py --list` to see this file resolved,
+# including which API keys are actually set in your environment.
+
+# Model used when --model is omitted. Must match a key below.
+default = "codex-sol"
+
+# Each entry declares:
+#   key            short slug passed to --model; also names the entry's history
+#                  file (/tmp/agent_reviewer_<key>.json). Renaming it breaks
+#                  saved invocations — treat it as stable.
+#   name           human label, shown by --list --verbose.
+#   access_method  which API to speak. This IS the wire protocol:
+#                    openrouter  -> OpenRouter chat.send      (OPENROUTER_API_KEY)
+#                    gemini_api  -> Gemini generateContent    (GEMINI_API_KEY)
+#                    openai_api  -> OpenAI Responses API      (OPENAI_API_KEY)
+#   id             model identifier sent to that API.
+#   tag            OPTIONAL. Attribution tag on inline PR comments, per
+#                  AGENTS.md. Defaults to key.upper().
+#   store          OPTIONAL, openai_api only, default false. Makes OpenAI retain
+#                  every payload server-side (private --pr diffs included) in
+#                  exchange for not re-sending the transcript each turn; only
+#                  worth it for long --session work. No entry uses it today.
+#
+# Entries are listed deepest-first; the cheap ones are at the bottom.
+
+[[models]]
+key = "codex-sol"
+name = "Codex GPT 5.6 Sol — OpenRouter"
+access_method = "openrouter"
+id = "openai/gpt-5.6-sol"
+tag = "CODEX"
+
+[[models]]
+key = "gemini-pro"
+name = "Gemini 3.1 Pro — Google API"
+access_method = "gemini_api"
+id = "gemini-3.1-pro-preview"
+tag = "GEMINI"
+
+# Same family as the agent that usually writes the code in this repo, so it is
+# the weakest second opinion here on Claude-authored diffs — reach for a
+# different family unless you specifically want Claude's read.
+[[models]]
+key = "opus"
+name = "Claude Opus 5 — OpenRouter"
+access_method = "openrouter"
+id = "anthropic/claude-opus-5"
+# Not "CLAUDE": AGENTS.md reserves **[CLAUDE]** for the authoring agent's own
+# PR comments, and a reviewer posting under it would be indistinguishable.
+tag = "OPUS"
+
+[[models]]
+key = "grok"
+name = "Grok 4.6 — OpenRouter"
+access_method = "openrouter"
+id = "x-ai/grok-4.6"
+
+[[models]]
+key = "glm"
+name = "GLM 5.3 — OpenRouter"
+access_method = "openrouter"
+id = "z-ai/glm-5.3"
+
+# Cheap tier — sanity passes on small diffs, not architecture or security review.
+[[models]]
+key = "gemini-lite"
+name = "Gemini 3.1 Flash Lite — Google API"
+access_method = "gemini_api"
+id = "gemini-3.1-flash-lite-preview"
+tag = "GEMINI"
+
+# Cheapest entry in the roster. Same-family caveat as `opus` applies.
+[[models]]
+key = "haiku"
+name = "Claude Haiku 4.5 — OpenRouter"
+access_method = "openrouter"
+id = "anthropic/claude-haiku-4.5"
+tag = "HAIKU"

@@ -25,7 +25,7 @@ If you are an AI assistant (like Gemini or Claude) reading this file:
 
 ### Comment Discipline
 
-- **Short and concise comments are golden.** Explain what code does only when it is *not obvious* or guards an edge case. When in doubt, shorter is better — do not bloat.
+- **Short and concise comments are golden.** Explain what code does only when it is _not obvious_ or guards an edge case. When in doubt, shorter is better — do not bloat.
 - **Cap comments at 6 lines.** If you need more, the code or its naming probably needs the work, not the comment.
 - **Never narrate an obvious method.** If the method name already says what it does, do not restate it in a comment above it.
 - **No historical corrections in comments.** Drop notes like `(used to be methodFoo, replaced 2026-07-01)` — that is what git blame is for.
@@ -119,8 +119,8 @@ If your project uses Docker for local development:
 ### Inter-Agent Communication
 
 - **Handovers across sessions or agents:** When a task spans multiple sessions, or when one agent hits a blocker that needs another agent's expertise, document the state in `IMPLEMENTATION_PLAN.md` so the next agent can pick up without re-deriving context.
-- **Second-opinion reviews:** for a non-Claude review of code, a PR, or an architecture decision, invoke the `agent-code-reviewer` skill (wraps `cli/agent_code_reviewer.py`). The skill encodes when a second opinion earns its token cost, which provider to pick (Gemini default, Codex for novel-subsystem architecture critique), and how to weight the reviewer's output against your own conviction. The script gives feedback only — it never writes code.
-- **PR comment attribution.** When more than one AI agent reviews PRs (e.g. Claude + Gemini + Copilot), prepend a bracketed tag to each comment so authors can distinguish them from human reviewers and from each other: `**[CLAUDE]**`, `**[GEMINI]**`, `**[COPILOT]**`. Apply the same convention in inline code-review comments and replies.
+- **Second-opinion reviews:** for a non-Claude review of code, a PR, or an architecture decision, invoke the `agent-code-reviewer` skill (wraps `cli/agent_code_reviewer.py`). The skill encodes when a second opinion earns its token cost, how to pick a model from the roster in `cli/agent_reviewer.toml` (`--list` shows what is available and which API keys are set), and how to weight the reviewer's output against your own conviction. The script gives feedback only — it never writes code.
+- **PR comment attribution.** When more than one AI agent reviews PRs (e.g. Claude + Gemini + Copilot), prepend a bracketed tag to each comment so authors can distinguish them from human reviewers and from each other: `**[CLAUDE]**`, `**[GEMINI]**`, `**[COPILOT]**`. Apply the same convention in inline code-review comments and replies. Tags posted by `cli/agent_code_reviewer.py` come from the reviewing model's `tag` in `cli/agent_reviewer.toml`, defaulting to its roster key upper-cased — set `tag` explicitly there rather than letting a key chosen for typing comfort become a public label.
 
 ---
 

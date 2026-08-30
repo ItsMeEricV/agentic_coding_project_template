@@ -12,8 +12,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from agent_code_reviewer import (  # noqa: E402
+    ConfigError,
     _build_line_content_index,
     annotate_diff_with_line_numbers,
+    load_config,
+    make_adapter,
+    parse_config,
 )
 
 
@@ -120,3 +124,169 @@ class LineContentIndexTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# Roster config parsing
+# ---------------------------------------------------------------------------
+
+
+def _raw(models=None, default="a"):
+    """Minimal valid raw-toml dict, overridable per test."""
+    if models is None:
+        models = [
+            {"key": "a", "name": "A", "access_method": "gemini_api", "id": "m-a"}
+        ]
+    return {"default": default, "models": models}
+
+
+class ParseConfigTests(unittest.TestCase):
+    def test_parses_entries_and_default(self):
+        roster = parse_config(_raw())
+        self.assertEqual(roster.default_key, "a")
+        self.assertEqual([e.key for e in roster.entries], ["a"])
+        self.assertEqual(roster.entries[0].id, "m-a")
+        self.assertEqual(roster.entries[0].access_method, "gemini_api")
+
+    def test_tag_defaults_to_key_uppercased(self):
+        roster = parse_config(_raw())
+        self.assertEqual(roster.entries[0].tag, "A")
+
+    def test_explicit_tag_wins(self):
+        models = [
+            {
+                "key": "gemini-pro",
+                "name": "A",
+                "access_method": "gemini_api",
+                "id": "m",
+                "tag": "GEMINI",
+            }
+        ]
+        roster = parse_config(_raw(models, default="gemini-pro"))
+        self.assertEqual(roster.entries[0].tag, "GEMINI")
+
+    def test_store_defaults_false(self):
+        self.assertFalse(parse_config(_raw()).entries[0].store)
+
+    def test_store_allowed_on_openai_api(self):
+        models = [
+            {
+                "key": "codex",
+                "name": "C",
+                "access_method": "openai_api",
+                "id": "gpt",
+                "store": True,
+            }
+        ]
+        roster = parse_config(_raw(models, default="codex"))
+        self.assertTrue(roster.entries[0].store)
+
+    def test_store_rejected_on_other_access_methods(self):
+        models = [
+            {
+                "key": "grok",
+                "name": "G",
+                "access_method": "openrouter",
+                "id": "x-ai/grok-4.6",
+                "store": True,
+            }
+        ]
+        with self.assertRaises(ConfigError) as ctx:
+            parse_config(_raw(models, default="grok"))
+        self.assertIn("store", str(ctx.exception))
+
+    def test_rejects_default_not_matching_any_key(self):
+        with self.assertRaises(ConfigError) as ctx:
+            parse_config(_raw(default="nope"))
+        self.assertIn("nope", str(ctx.exception))
+
+    def test_rejects_missing_default(self):
+        raw = _raw()
+        del raw["default"]
+        with self.assertRaises(ConfigError):
+            parse_config(raw)
+
+    def test_rejects_empty_roster(self):
+        with self.assertRaises(ConfigError):
+            parse_config(_raw(models=[]))
+
+    def test_rejects_duplicate_keys(self):
+        models = [
+            {"key": "a", "name": "A", "access_method": "gemini_api", "id": "1"},
+            {"key": "a", "name": "B", "access_method": "openai_api", "id": "2"},
+        ]
+        with self.assertRaises(ConfigError) as ctx:
+            parse_config(_raw(models))
+        self.assertIn("a", str(ctx.exception))
+
+    def test_rejects_unknown_access_method(self):
+        models = [{"key": "a", "name": "A", "access_method": "carrier_pigeon", "id": "1"}]
+        with self.assertRaises(ConfigError) as ctx:
+            parse_config(_raw(models))
+        self.assertIn("carrier_pigeon", str(ctx.exception))
+
+    def test_rejects_unknown_field(self):
+        """A typo'd optional field (`tags`) must fail loudly, not default silently."""
+        models = [
+            {
+                "key": "a",
+                "name": "A",
+                "access_method": "gemini_api",
+                "id": "1",
+                "tags": "GEMINI",
+            }
+        ]
+        with self.assertRaises(ConfigError) as ctx:
+            parse_config(_raw(models))
+        self.assertIn("tags", str(ctx.exception))
+
+    def test_rejects_missing_required_field(self):
+        for field in ("key", "name", "access_method", "id"):
+            with self.subTest(field=field):
+                model = {
+                    "key": "a",
+                    "name": "A",
+                    "access_method": "gemini_api",
+                    "id": "1",
+                }
+                del model[field]
+                with self.assertRaises(ConfigError):
+                    parse_config(_raw([model], default="a"))
+
+
+class RosterLookupTests(unittest.TestCase):
+    def setUp(self):
+        models = [
+            {"key": "a", "name": "A", "access_method": "gemini_api", "id": "1"},
+            {"key": "b", "name": "B", "access_method": "openai_api", "id": "2"},
+        ]
+        self.roster = parse_config(_raw(models))
+
+    def test_get_returns_entry_by_key(self):
+        self.assertEqual(self.roster.get("b").id, "2")
+
+    def test_get_unknown_key_lists_valid_keys(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self.roster.get("zzz")
+        msg = str(ctx.exception)
+        self.assertIn("zzz", msg)
+        self.assertIn("a", msg)
+        self.assertIn("b", msg)
+
+    def test_default_entry_resolves(self):
+        self.assertEqual(self.roster.default_entry().key, "a")
+
+
+class ShippedRosterTests(unittest.TestCase):
+    """The committed roster must always be valid — it is what a fork inherits."""
+
+    def test_shipped_roster_parses(self):
+        roster = load_config(Path(__file__).resolve().parent / "agent_reviewer.toml")
+        self.assertTrue(roster.entries)
+        self.assertEqual(roster.default_entry().key, roster.default_key)
+
+    def test_every_access_method_is_exercised_by_an_adapter(self):
+        roster = load_config(Path(__file__).resolve().parent / "agent_reviewer.toml")
+        for entry in roster.entries:
+            with self.subTest(key=entry.key):
+                self.assertIsNotNone(make_adapter(entry))

@@ -6,10 +6,11 @@ Make every script executable (`chmod +x`) and prefer a shebang (`#!/usr/bin/env 
 
 ## Shipped scripts
 
-| File                     | Purpose                                                                                                                                                                                                                                                     |
-| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `worktree-add.sh`        | Create a new git worktree wired up for the project's Docker stack (auto-assigned ports, COMPOSE_PROJECT_NAME, WORKTREE_DB). See `docker/nextjs/README.md` → "The worktree pattern."                                                                         |
-| `agent_code_reviewer.py` | Multi-provider second-opinion code reviewer (Gemini + Codex). Reviewer provides feedback only, never writes code. See the `agent-code-reviewer` skill for invocation judgment; run `python3 cli/agent_code_reviewer.py --help` for flags and env-var setup. |
+| File                     | Purpose                                                                                                                                                                                                                                                                                                                                             |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `worktree-add.sh`        | Create a new git worktree wired up for the project's Docker stack (auto-assigned ports, COMPOSE_PROJECT_NAME, WORKTREE_DB). See `docker/nextjs/README.md` → "The worktree pattern."                                                                                                                                                                 |
+| `agent_code_reviewer.py` | Config-driven second-opinion code reviewer. Models come from `agent_reviewer.toml`; reviewer provides feedback only, never writes code. Run with `uv run` (deps are declared in a PEP 723 header). See the `agent-code-reviewer` skill for invocation judgment; `uv run cli/agent_code_reviewer.py --list` shows the roster and `--help` the flags. |
+| `agent_reviewer.toml`    | Model roster for the reviewer: one `[[models]]` entry per model, each with a `key` (passed to `--model`), an `access_method` (`gemini_api` / `openai_api` / `openrouter` — this is the wire protocol), and an `id`. Committed and secret-free; API keys stay in env vars.                                                                           |
 
 ## Conventions
 
