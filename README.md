@@ -174,6 +174,8 @@ Each stamp has its own README explaining placement, env vars, and profile activa
 | **`agent_code_reviewer.py`** | Config-driven second-opinion reviewer; models live in `cli/agent_reviewer.toml`. Run `uv run cli/agent_code_reviewer.py --list` for the roster, or invoke the `agent-code-reviewer` skill. |
 | **`worktree-add.sh`**        | Create a new git worktree wired up for the Docker stack — auto-assigns ports, writes per-worktree `.env.docker`, prints bring-up commands.                                                 |
 
+The reviewer's models are declared in `cli/agent_reviewer.toml`, most reached through OpenRouter — so swapping in a different model is a three-line edit, not a code change. Before adding one, weigh it against what is already in the roster: OpenRouter's compare view puts price, context window, and throughput side by side, e.g. [gpt-5.6-sol vs grok-4.6 vs glm-5.3](https://openrouter.ai/compare/openai/gpt-5.6-sol/x-ai/grok-4.6/z-ai/glm-5.3). Prefer a reviewer from a different model family than whatever wrote the code — a second opinion is only worth its tokens if it brings a different prior.
+
 See `cli/README.md` for script-authoring conventions.
 
 ## ⚙️ The tooling stubs

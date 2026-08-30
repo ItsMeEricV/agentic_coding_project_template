@@ -61,6 +61,12 @@ name = "Grok 4.6 — OpenRouter"
 access_method = "openrouter"
 id = "x-ai/grok-4.6"
 
+[[models]]
+key = "glm"
+name = "GLM 5.3 — OpenRouter"
+access_method = "openrouter"
+id = "z-ai/glm-5.3"
+
 # Cheap tier — sanity passes on small diffs, not architecture or security review.
 [[models]]
 key = "gemini-lite"
