@@ -25,6 +25,7 @@ gh label create "wayfinder:grilling"  --color BFD4F2 --description "Wayfinder: c
 gh label create "wayfinder:research"  --color BFD4F2 --description "Wayfinder: find a fact"     --force
 gh label create "wayfinder:prototype" --color BFD4F2 --description "Wayfinder: build a prop"    --force
 gh label create "wayfinder:task"      --color BFD4F2 --description "Wayfinder: unblocking work" --force
+gh label create "wayfinder:next"      --color D93F0B --description "Wayfinder: take this one next"  --force
 ```
 
 Every issue the skill creates carries **two** labels: the umbrella `wayfinder` plus its specific one (`wayfinder:map` or a `wayfinder:<type>`). The umbrella is what makes the effort legible from outside — one query finds everything wayfinder has ever opened in the repo, without OR-ing five labels or knowing a map number:
@@ -94,7 +95,23 @@ while IFS=$'\t' read -r num title; do
 done
 ```
 
-Frontier order is the order this returns: sub-issue order on the map, which is creation order unless someone has reordered it in the UI.
+## The next pointer
+
+Exactly one open ticket per map carries `wayfinder:next`: the one to take. Read it, scoped to this map's children:
+
+```bash
+gh api "repos/$REPO/issues/$MAP_NUM/sub_issues" \
+  --jq '.[] | select(.state=="open") | select([.labels[].name] | index("wayfinder:next")) | [.number, .title] | @tsv'
+```
+
+Move it — remove then add, in that order, so the map never has two:
+
+```bash
+gh issue edit "$OLD_NEXT_NUM" --remove-label "wayfinder:next"
+gh issue edit "$NEW_NEXT_NUM" --add-label "wayfinder:next"
+```
+
+Closing an issue does **not** drop its labels, so clear `wayfinder:next` as part of resolving a ticket, not after. If the query above returns nothing, the pointer was lost (closed without clearing, or never set) — pick from the frontier, say why, and set it.
 
 ## Claim a ticket
 

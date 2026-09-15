@@ -76,6 +76,8 @@ Each ticket carries a `wayfinder:<type>` label, one of `research`, `prototype`, 
 
 A session **claims** a ticket by assigning it to the dev driving the map, **first**, before any work, so concurrent sessions skip it. That assignee _is_ the claim: an open, unassigned ticket is unclaimed.
 
+One open ticket per map carries `wayfinder:next`: the ticket to take. Blocking says what _can't_ happen yet; `wayfinder:next` says which of the several takeable tickets _should_ happen now. Whoever resolves a ticket moves the pointer as part of resolving it, so the choice is a deliberate act with a visible owner rather than a side effect of list order.
+
 Blocking uses GitHub's **native** issue dependencies (`blocked by` / `blocks`), not a body convention: the native relationship renders the frontier _visually_ in GitHub's own UI, so the human sees what's takeable without opening the map. A ticket is **unblocked** when every ticket blocking it is closed; the **frontier** is the open, unblocked, unassigned sub-issues, the edge of the known.
 
 The answer isn't part of the body; it's recorded on resolution (see [Work through the map](#work-through-the-map)). Assets created while resolving a ticket are linked from the issue, not pasted in.
@@ -135,17 +137,19 @@ User invokes with a loose idea.
 3. **Propose the whole map in chat and wait for an explicit yes** (see [Ask before you open a single issue](#ask-before-you-open-a-single-issue)): destination, ticket titles and types, blocking edges, fog.
 4. **Create the map issue** (label `wayfinder:map`): Destination and Notes filled in, Decisions-so-far empty, the fog sketched into **Not yet specified**.
 5. **Create the tickets you can specify now**, attach each as a sub-issue of the map, then wire blocking edges in a **second pass** (issues need numbers before they can reference each other). Wiring sorts them into the frontier and the blocked; everything you can't yet specify stays in the fog: the **Not yet specified** section.
-6. **Fire the research subagents.** For each `research` ticket you just created, dispatch a subagent in parallel to resolve it, capturing its findings on a throwaway `research/<name>` branch with a pointer from the ticket.
-7. Stop: charting is one session's work; it hand-resolves nothing.
+6. **Set `wayfinder:next`** on the frontier ticket to start with.
+7. **Fire the research subagents.** For each `research` ticket you just created, dispatch a subagent in parallel to resolve it, capturing its findings on a throwaway `research/<name>` branch with a pointer from the ticket.
+8. Stop: charting is one session's work; it hand-resolves nothing.
 
 ### Work through the map
 
 User invokes with a map (URL or number). A ticket is **optional**: without one, you pick the next decision, not the user.
 
 1. Load the **map**: the low-res view, not every ticket body.
-2. Choose the ticket. If the user named one, use it. Otherwise take the first frontier ticket in order. **Claim it**: assign it to yourself before any work.
+2. Choose the ticket. If the user named one, use it. Otherwise take the one labelled `wayfinder:next`. If no ticket carries it, choose from the frontier, say in one line why that one, and label it. **Claim it**: assign it to yourself before any work.
 3. Resolve it. **Zoom as needed**: fetch the full body of any related or closed ticket on demand; invoke whichever skills the `## Notes` block names. If in doubt, invoke `deep-discuss`.
 4. Record the resolution: post the answer as a **resolution comment**, write an RFC if the decision [earns one](#decisions-that-earn-an-rfc), **close** the issue, and **append a context pointer** to the map's Decisions-so-far.
 5. Add newly-surfaced tickets (create-then-wire); graduate any fog the answer has made specifiable, clearing each graduated patch from **Not yet specified** so it lives only as its new ticket. If the answer reveals that a ticket (this one or another) sits beyond the destination, **rule it out of scope** rather than resolving it on the route. If the decision invalidates other parts of the map, update or delete those tickets.
+6. **Move `wayfinder:next`** to the frontier ticket that should be taken now — after step 5, so tickets that only just surfaced are eligible. Nothing left on the frontier means the map is done; say so instead of pointing at nothing.
 
 The user may run unblocked tickets in parallel, so expect other sessions to be editing the tracker concurrently. Re-read an issue immediately before you edit it rather than trusting a body you loaded at the top of the session.
