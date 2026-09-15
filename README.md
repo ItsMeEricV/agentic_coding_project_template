@@ -26,13 +26,13 @@ The contract between you, your project, and any agent working on it. Keep these 
 4. **`KNOWLEDGE.md`** — **The "Vocabulary."** Domain glossary and shared understandings. Keeps the codebase, docs, and conversation using the same words for the same things.
 5. **`MEMORY.md`** — **The "Journal."** Agent-maintained record of repo-scoped quirks, bugs, and patterns. Prevents repeating past mistakes. Version-controlled and vendor-neutral, so it reaches teammates and every agent — unlike an agent's own private memory store, which holds per-user preferences and stays out of the repo.
 
-Work in flight is deliberately **not** on the shelf: plans live in the agent's planning mode, session handoffs in the `handoff` skill, and outstanding tasks in your issue tracker (GitHub Issues, Linear). A committed markdown checklist drifts from reality the moment the approach changes, and every agent that reads it inherits the drift.
+Work in flight is deliberately **not** on the shelf: plans live in the agent's planning mode, session handoffs in the `handoff` skill, and outstanding tasks in your issue tracker (GitHub Issues, Linear) — including work too big for one session, which the `wayfinder` skill charts there as a map of decision tickets. A committed markdown checklist drifts from reality the moment the approach changes, and every agent that reads it inherits the drift.
 
 Two thin per-agent files (`CLAUDE.md`, `GEMINI.md`) point each tool at `AGENTS.md` so the rules stay in one place. `CLAUDE.md` opens with an `@AGENTS.md` import, because Claude Code reads `CLAUDE.md` and **not** `AGENTS.md` — without the import the rules never reach the context window. `pi` and Codex read `AGENTS.md` natively and need no pointer.
 
 ## 🤖 The Claude skill bundle
 
-`claude/skills/` ships six Claude Code skills that get symlinked into your shell's `~/.claude/skills/` directory. Each is a self-contained workflow the agent invokes automatically when it matches your request.
+`claude/skills/` ships seven Claude Code skills that get symlinked into your shell's `~/.claude/skills/` directory. Each is a self-contained workflow the agent invokes automatically when it matches your request.
 
 | Skill                          | What it does                                                                                                                                                                                                          |
 | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -42,6 +42,7 @@ Two thin per-agent files (`CLAUDE.md`, `GEMINI.md`) point each tool at `AGENTS.m
 | 🌱 **`new-project-setup`**     | Walks fork-time decisions (project slug, ORM choice, ngrok, PG extensions, port collisions) and substitutes Docker placeholders in one batch.                                                                         |
 | 🔄 **`project-template-sync`** | Back-ports lessons from a downstream project into this template. Generalizes project-specific rules into reusable foundation.                                                                                         |
 | 🚀 **`pull-request-creator`**  | Fixed PR title format, body template, attribution conventions, and `pr-review-toolkit` follow-up.                                                                                                                     |
+| 🧭 **`wayfinder`**             | Charts work too big for one session as a map of decision tickets on GitHub Issues, then resolves them one per session until the way is clear. Explicit-invoke only — it opens issues.                                 |
 
 `pi` loads these same skills — point its `settings.json` at the directory with `"skills": ["~/.claude/skills"]`.
 
