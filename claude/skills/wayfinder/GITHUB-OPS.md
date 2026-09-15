@@ -19,6 +19,7 @@ Resolve the database id every time you wire a relationship. `$REPO` below is alw
 Labels are cheap and `--force` is idempotent, so just run this when charting a map in a repo for the first time:
 
 ```bash
+gh label create "wayfinder"           --color 1D76DB --description "Created by the wayfinder skill" --force
 gh label create "wayfinder:map"       --color 5319E7 --description "A wayfinder map"            --force
 gh label create "wayfinder:grilling"  --color BFD4F2 --description "Wayfinder: conversation"    --force
 gh label create "wayfinder:research"  --color BFD4F2 --description "Wayfinder: find a fact"     --force
@@ -26,12 +27,21 @@ gh label create "wayfinder:prototype" --color BFD4F2 --description "Wayfinder: b
 gh label create "wayfinder:task"      --color BFD4F2 --description "Wayfinder: unblocking work" --force
 ```
 
+Every issue the skill creates carries **two** labels: the umbrella `wayfinder` plus its specific one (`wayfinder:map` or a `wayfinder:<type>`). The umbrella is what makes the effort legible from outside — one query finds everything wayfinder has ever opened in the repo, without OR-ing five labels or knowing a map number:
+
+```bash
+gh issue list --label "wayfinder" --state all --limit 200   # everything the skill has opened
+gh issue list --label "wayfinder:map" --state open          # the live maps
+```
+
+It also gives the human one label to filter out of their ordinary backlog views, so a map's dozen decision tickets don't drown the real work.
+
 ## Create the map
 
 Write the body to a file first — heredocs inside `--body` mangle markdown.
 
 ```bash
-gh issue create --title "<destination name>" --label "wayfinder:map" --body-file map.md
+gh issue create --title "<destination name>" --label "wayfinder" --label "wayfinder:map" --body-file map.md
 ```
 
 ## Create a ticket and attach it to the map
@@ -39,7 +49,7 @@ gh issue create --title "<destination name>" --label "wayfinder:map" --body-file
 Two steps: create the issue, then attach it as a sub-issue by database id.
 
 ```bash
-TICKET_URL=$(gh issue create --title "<question as a title>" --label "wayfinder:grilling" --body-file ticket.md)
+TICKET_URL=$(gh issue create --title "<question as a title>" --label "wayfinder" --label "wayfinder:grilling" --body-file ticket.md)
 TICKET_NUM=${TICKET_URL##*/}
 TICKET_ID=$(gh api "repos/$REPO/issues/$TICKET_NUM" --jq .id)
 gh api --method POST "repos/$REPO/issues/$MAP_NUM/sub_issues" -F sub_issue_id="$TICKET_ID"
