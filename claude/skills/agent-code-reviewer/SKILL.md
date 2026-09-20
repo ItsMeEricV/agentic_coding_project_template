@@ -52,24 +52,22 @@ If you're unsure, omit `--model` — the roster's `default` is set to the deep m
 
 Never edit `cli/agent_reviewer.toml` unless the user asked. Adding an entry commits a model choice to the repo for every future run.
 
-When they do ask ("add GPT Astra to the roster"), the only hard part is the provider's exact `id`. **Resolve it from the provider's model list — never guess a slug from the marketing name**, and never edit the script: the roster is data, and the three `access_method` adapters already cover every OpenAI-, Google-, and OpenRouter-hosted model.
+When they do ask ("add GPT Astra to the roster"), the only hard part is the provider's exact `id`. **Never guess a slug from a marketing name** — resolve it:
 
-- **openrouter** — public, no auth:
+```bash
+uv run cli/agent_code_reviewer.py --find-model astra
+```
 
-  ```bash
-  curl -s https://openrouter.ai/api/v1/models \
-    | python3 -c 'import json,sys;[print(m["id"],"|",m["name"],"|",m["pricing"]["prompt"]) for m in json.load(sys.stdin)["data"] if "astra" in (m["id"]+m["name"]).lower()]'
-  ```
+That searches OpenRouter's catalog (public, no API key) and prints each match's id, context window, per-million price, and whether it is an alias or a batch variant. Adding the entry itself never needs a Python change — the roster is data, and the three `access_method` adapters already cover every model these providers host.
 
-- **openai_api** — `curl -s https://api.openai.com/v1/models -H "Authorization: Bearer $OPENAI_API_KEY"`
-- **gemini_api** — `curl -s "https://generativelanguage.googleapis.com/v1beta/models?key=$GEMINI_API_KEY"`
+Pick from what it returns:
 
-Then pick from what the search returns:
-
-- **Prefer a pinned slug over a floating alias.** Aliases are the entries carrying an `alias_target` (and, on OpenRouter, a leading `~`): `~openai/gpt-astra-latest` → `openai/gpt-6-astra`. An alias silently changes model under a roster entry whose `key` and `name` still claim the old one.
+- **Take the pinned id, not a floating alias** — the flag annotates aliases `alias -> <target>` and sorts them last. An alias silently changes model under a roster entry whose `key` and `name` still claim the old one.
 - **Skip `:batch` variants.** Half price, but queued rather than interactive — wrong shape for a review loop you're waiting on.
-- Set `tag` when the family already has one in the roster (all OpenAI/Codex entries share `CODEX`); otherwise it defaults to the key upper-cased and becomes a public label on PR comments.
-- Confirm with `uv run cli/agent_code_reviewer.py --list`, which resolves the roster and shows whether that entry's API key is set.
+- Set `tag` when the family already has one in the roster (the OpenAI/Codex entries share `CODEX`); otherwise it defaults to the key upper-cased and becomes a public label on PR comments.
+- Confirm with `--list`, which resolves the roster and shows whether that entry's API key is set.
+
+A model reachable only through a direct provider API (a preview id OpenRouter has not listed) won't appear. Get that id from the provider's own model list and set `access_method` to `gemini_api` or `openai_api` accordingly.
 
 ## Reading reviewer output
 

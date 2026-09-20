@@ -15,9 +15,12 @@ from agent_code_reviewer import (  # noqa: E402
     ConfigError,
     _build_line_content_index,
     annotate_diff_with_line_numbers,
+    filter_catalog,
+    format_catalog,
     load_config,
     make_adapter,
     parse_config,
+    parse_openrouter_catalog,
 )
 
 
@@ -290,3 +293,98 @@ class ShippedRosterTests(unittest.TestCase):
         for entry in roster.entries:
             with self.subTest(key=entry.key):
                 self.assertIsNotNone(make_adapter(entry))
+
+
+# A trimmed OpenRouter /models payload: one pinned model, its floating alias,
+# its batch variant, and an unrelated family to prove the filter excludes.
+CATALOG_PAYLOAD = {
+    "data": [
+        {
+            "id": "~openai/gpt-astra-latest",
+            "name": "OpenAI: GPT Astra Latest",
+            "context_length": 1050000,
+            "alias_target": {"slug": "openai/gpt-6-astra"},
+            "pricing": {"prompt": "0.00001", "completion": "0.00005"},
+        },
+        {
+            "id": "openai/gpt-6-astra:batch",
+            "name": "OpenAI: GPT-6 Astra (batch)",
+            "context_length": 1050000,
+            "pricing": {"prompt": "0.000005", "completion": "0.000025"},
+        },
+        {
+            "id": "openai/gpt-6-astra",
+            "name": "OpenAI: GPT-6 Astra",
+            "context_length": 1050000,
+            "pricing": {"prompt": "0.00001", "completion": "0.00005"},
+        },
+        {
+            "id": "z-ai/glm-5.3",
+            "name": "Z.AI: GLM 5.3",
+            "context_length": 200000,
+            "pricing": {"prompt": "0.0000006", "completion": "0.0000022"},
+        },
+    ]
+}
+
+
+class CatalogParseTests(unittest.TestCase):
+    def test_prices_are_converted_to_dollars_per_million_tokens(self):
+        by_id = {m.id: m for m in parse_openrouter_catalog(CATALOG_PAYLOAD)}
+        self.assertAlmostEqual(by_id["openai/gpt-6-astra"].prompt_price, 10.0)
+        self.assertAlmostEqual(by_id["openai/gpt-6-astra"].completion_price, 50.0)
+
+    def test_alias_target_and_batch_variants_are_flagged(self):
+        by_id = {m.id: m for m in parse_openrouter_catalog(CATALOG_PAYLOAD)}
+        self.assertEqual(
+            by_id["~openai/gpt-astra-latest"].alias_target, "openai/gpt-6-astra"
+        )
+        self.assertFalse(by_id["openai/gpt-6-astra"].alias_target)
+        self.assertTrue(by_id["openai/gpt-6-astra:batch"].is_batch)
+        self.assertFalse(by_id["openai/gpt-6-astra"].is_batch)
+
+    def test_missing_pricing_and_context_do_not_raise(self):
+        models = parse_openrouter_catalog({"data": [{"id": "x/y", "name": "X"}]})
+        self.assertEqual(models[0].prompt_price, 0.0)
+        self.assertEqual(models[0].context_length, 0)
+
+    def test_entries_without_an_id_are_skipped(self):
+        self.assertEqual(parse_openrouter_catalog({"data": [{"name": "nameless"}]}), [])
+
+    def test_absent_data_key_yields_no_models(self):
+        self.assertEqual(parse_openrouter_catalog({}), [])
+
+
+class CatalogFilterTests(unittest.TestCase):
+    def setUp(self):
+        self.models = parse_openrouter_catalog(CATALOG_PAYLOAD)
+
+    def test_pinned_interactive_id_sorts_above_alias_and_batch(self):
+        hits = filter_catalog(self.models, "astra")
+        self.assertEqual(
+            [m.id for m in hits],
+            [
+                "openai/gpt-6-astra",
+                "openai/gpt-6-astra:batch",
+                "~openai/gpt-astra-latest",
+            ],
+        )
+
+    def test_match_is_case_insensitive_and_covers_display_name(self):
+        # "Z.AI" appears only in the name; the id spells it "z-ai".
+        self.assertEqual([m.id for m in filter_catalog(self.models, "z.aI")], ["z-ai/glm-5.3"])
+
+    def test_non_matching_query_returns_nothing(self):
+        self.assertEqual(filter_catalog(self.models, "claude"), [])
+
+
+class CatalogFormatTests(unittest.TestCase):
+    def test_table_annotates_alias_target_and_batch(self):
+        table = format_catalog(filter_catalog(parse_openrouter_catalog(CATALOG_PAYLOAD), "astra"))
+        self.assertIn("alias -> openai/gpt-6-astra", table)
+        self.assertIn("batch (queued, not interactive)", table)
+
+    def test_table_shows_compact_context_and_per_million_price(self):
+        table = format_catalog(filter_catalog(parse_openrouter_catalog(CATALOG_PAYLOAD), "gpt-6-astra"))
+        self.assertIn("1.05M", table)
+        self.assertIn("$10/$50", table)
