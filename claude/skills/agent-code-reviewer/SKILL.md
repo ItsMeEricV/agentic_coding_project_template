@@ -48,7 +48,28 @@ Read the roster first (`--list`), then apply judgment. The keys below are the sh
 
 If you're unsure, omit `--model` — the roster's `default` is set to the deep model the project trusts most.
 
-Never edit `cli/agent_reviewer.toml` to add a model unless the user asked. Adding an entry commits a model choice to the repo for every future run.
+## Adding a model to the roster
+
+Never edit `cli/agent_reviewer.toml` unless the user asked. Adding an entry commits a model choice to the repo for every future run.
+
+When they do ask ("add GPT Astra to the roster"), the only hard part is the provider's exact `id`. **Resolve it from the provider's model list — never guess a slug from the marketing name**, and never edit the script: the roster is data, and the three `access_method` adapters already cover every OpenAI-, Google-, and OpenRouter-hosted model.
+
+- **openrouter** — public, no auth:
+
+  ```bash
+  curl -s https://openrouter.ai/api/v1/models \
+    | python3 -c 'import json,sys;[print(m["id"],"|",m["name"],"|",m["pricing"]["prompt"]) for m in json.load(sys.stdin)["data"] if "astra" in (m["id"]+m["name"]).lower()]'
+  ```
+
+- **openai_api** — `curl -s https://api.openai.com/v1/models -H "Authorization: Bearer $OPENAI_API_KEY"`
+- **gemini_api** — `curl -s "https://generativelanguage.googleapis.com/v1beta/models?key=$GEMINI_API_KEY"`
+
+Then pick from what the search returns:
+
+- **Prefer a pinned slug over a floating alias.** Aliases are the entries carrying an `alias_target` (and, on OpenRouter, a leading `~`): `~openai/gpt-astra-latest` → `openai/gpt-6-astra`. An alias silently changes model under a roster entry whose `key` and `name` still claim the old one.
+- **Skip `:batch` variants.** Half price, but queued rather than interactive — wrong shape for a review loop you're waiting on.
+- Set `tag` when the family already has one in the roster (all OpenAI/Codex entries share `CODEX`); otherwise it defaults to the key upper-cased and becomes a public label on PR comments.
+- Confirm with `uv run cli/agent_code_reviewer.py --list`, which resolves the roster and shows whether that entry's API key is set.
 
 ## Reading reviewer output
 
