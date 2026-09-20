@@ -29,6 +29,16 @@ default = "codex-sol"
 #
 # Entries are listed deepest-first; the cheap ones are at the bottom.
 
+# 5x the price of codex-sol for the same context window — reach for it on
+# load-bearing reviews (security boundaries, migrations, novel subsystems),
+# not as the everyday default.
+[[models]]
+key = "codex-astra"
+name = "Codex GPT-6 Astra — OpenRouter"
+access_method = "openrouter"
+id = "openai/gpt-6-astra"
+tag = "CODEX"
+
 [[models]]
 key = "codex-sol"
 name = "Codex GPT 5.6 Sol — OpenRouter"

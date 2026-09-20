@@ -48,7 +48,26 @@ Read the roster first (`--list`), then apply judgment. The keys below are the sh
 
 If you're unsure, omit `--model` — the roster's `default` is set to the deep model the project trusts most.
 
-Never edit `cli/agent_reviewer.toml` to add a model unless the user asked. Adding an entry commits a model choice to the repo for every future run.
+## Adding a model to the roster
+
+Never edit `cli/agent_reviewer.toml` unless the user asked. Adding an entry commits a model choice to the repo for every future run.
+
+When they do ask ("add GPT Astra to the roster"), the only hard part is the provider's exact `id`. **Never guess a slug from a marketing name** — resolve it:
+
+```bash
+uv run cli/agent_code_reviewer.py --find-model astra
+```
+
+That searches OpenRouter's catalog (public, no API key) and prints each match's id, context window, per-million price, and whether it is an alias or a batch variant. Adding the entry itself never needs a Python change — the roster is data, and the three `access_method` adapters already cover every model these providers host.
+
+Pick from what it returns:
+
+- **Take the pinned id, not a floating alias** — the flag annotates aliases `alias -> <target>` and sorts them last. An alias silently changes model under a roster entry whose `key` and `name` still claim the old one.
+- **Skip `:batch` variants.** Half price, but queued rather than interactive — wrong shape for a review loop you're waiting on.
+- Set `tag` when the family already has one in the roster (the OpenAI/Codex entries share `CODEX`); otherwise it defaults to the key upper-cased and becomes a public label on PR comments.
+- Confirm with `--list`, which resolves the roster and shows whether that entry's API key is set.
+
+A model reachable only through a direct provider API (a preview id OpenRouter has not listed) won't appear. Get that id from the provider's own model list and set `access_method` to `gemini_api` or `openai_api` accordingly.
 
 ## Reading reviewer output
 

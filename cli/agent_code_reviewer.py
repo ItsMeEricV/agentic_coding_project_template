@@ -16,7 +16,8 @@ The available models are data, not code: they live in the roster at
 model identifier that API expects). Add a model by editing the roster; adding a
 new *access method* is the only change that needs Python.
 
-  uv run cli/agent_code_reviewer.py --list        # resolved roster + key status
+  uv run cli/agent_code_reviewer.py --list             # resolved roster + key status
+  uv run cli/agent_code_reviewer.py --find-model astra # search for a new model id
 
 Setup:
   Only the access methods you actually use need a key.
@@ -55,6 +56,7 @@ Usage:
   uv run cli/agent_code_reviewer.py --ttl 60 "Keep history for 1 hour"
   uv run cli/agent_code_reviewer.py --system "You are a security auditor" "Check for XSS"
   uv run cli/agent_code_reviewer.py --list --verbose
+  uv run cli/agent_code_reviewer.py --find-model "gpt-6"
 
   Running under bare `python3` works for every access method except
   `openrouter`, whose SDK import is deferred until that adapter is used.
@@ -84,6 +86,7 @@ import subprocess
 import sys
 import time
 import tomllib
+import urllib.error
 import urllib.request
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -298,12 +301,120 @@ def format_roster(roster: Roster, verbose: bool = False) -> str:
     if verbose:
         headers.insert(1, "NAME")
         headers.append("TAG")
+    return _render_table(headers, rows) + "\n\n* = default"
+
+
+def _render_table(headers: list[str], rows: list[list[str]]) -> str:
     widths = [max(len(r[i]) for r in [headers] + rows) for i in range(len(headers))]
     lines = ["  ".join(h.ljust(w) for h, w in zip(headers, widths)).rstrip()]
     lines += ["  ".join(c.ljust(w) for c, w in zip(r, widths)).rstrip() for r in rows]
-    lines.append("")
-    lines.append("* = default")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Model catalog lookup (--find-model)
+# ---------------------------------------------------------------------------
+#
+# Answers "what is the exact id for the model I know by its marketing name",
+# so a roster entry is never a guessed slug. OpenRouter only: its catalog is
+# public (no key), so this works on a fresh clone before any setup, and it
+# lists every family the roster uses. The two direct-API access methods reach
+# models that are listed here too — only their `id` spelling differs.
+
+OPENROUTER_CATALOG_URL: str = "https://openrouter.ai/api/v1/models"
+
+
+@dataclass(frozen=True)
+class CatalogModel:
+    """One model from a provider catalog, reduced to what picking one needs."""
+
+    id: str
+    name: str
+    context_length: int
+    prompt_price: float  # USD per million tokens
+    completion_price: float
+    alias_target: str  # "" unless this id is a floating alias
+    is_batch: bool
+
+    @property
+    def sort_key(self) -> tuple[int, int, str]:
+        # Pinned interactive ids first: they are what a roster entry should
+        # name. Aliases drift under a fixed roster `name`; batch variants are
+        # queued rather than interactive.
+        return (bool(self.alias_target), self.is_batch, self.id)
+
+
+def parse_openrouter_catalog(payload: dict) -> list[CatalogModel]:
+    """Reduce an OpenRouter /models response to CatalogModels. Pure."""
+    models = []
+    for raw in payload.get("data", []):
+        model_id = raw.get("id", "")
+        if not model_id:
+            continue
+        pricing = raw.get("pricing") or {}
+        models.append(
+            CatalogModel(
+                id=model_id,
+                name=raw.get("name") or model_id,
+                context_length=int(raw.get("context_length") or 0),
+                prompt_price=_per_million(pricing.get("prompt")),
+                completion_price=_per_million(pricing.get("completion")),
+                alias_target=((raw.get("alias_target") or {}).get("slug") or ""),
+                is_batch=model_id.endswith(":batch"),
+            )
+        )
+    return models
+
+
+def _per_million(price: object) -> float:
+    """Catalog prices are USD per token as strings; humans compare per M."""
+    try:
+        return float(price) * 1_000_000  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def filter_catalog(models: list[CatalogModel], query: str) -> list[CatalogModel]:
+    """Case-insensitive substring match over id and display name."""
+    needle = query.lower()
+    hits = [m for m in models if needle in m.id.lower() or needle in m.name.lower()]
+    return sorted(hits, key=lambda m: m.sort_key)
+
+
+def format_catalog(models: list[CatalogModel]) -> str:
+    rows = []
+    for model in models:
+        notes = []
+        if model.alias_target:
+            notes.append(f"alias -> {model.alias_target}")
+        if model.is_batch:
+            notes.append("batch (queued, not interactive)")
+        rows.append(
+            [
+                model.id,
+                model.name,
+                _compact_count(model.context_length),
+                f"${model.prompt_price:g}/${model.completion_price:g}",
+                ", ".join(notes),
+            ]
+        )
+    headers = ["ID", "NAME", "CONTEXT", "$IN/$OUT per M", "NOTES"]
+    return _render_table(headers, rows)
+
+
+def _compact_count(value: int) -> str:
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.2f}M".replace(".00M", "M")
+    if value >= 1_000:
+        return f"{value // 1_000}K"
+    return str(value)
+
+
+def fetch_openrouter_catalog(url: str = OPENROUTER_CATALOG_URL) -> dict:
+    """Fetch the public catalog. No auth — deliberately usable key-less."""
+    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read().decode("utf-8"))
 
 
 # ---------------------------------------------------------------------------
@@ -1143,6 +1254,17 @@ def main() -> None:
         action="store_true",
         help="With --list, also show each entry's full name and attribution tag.",
     )
+    parser.add_argument(
+        "--find-model",
+        dest="find_model",
+        default="",
+        metavar="QUERY",
+        help=(
+            "Search OpenRouter's public catalog for QUERY (matches model id and "
+            "name) and exit. Use it to resolve a marketing name to the exact `id` "
+            "a roster entry needs. Needs no API key. Exit 1 if nothing matches."
+        ),
+    )
     parser.add_argument("--file", dest="file_path", default="", help="Attach file content")
     parser.add_argument(
         "--system", dest="system_prompt", default="", help="Override system prompt"
@@ -1168,6 +1290,25 @@ def main() -> None:
         "--history", action="store_true", help="Print conversation history"
     )
     args = parser.parse_args()
+
+    # Catalog lookup needs neither the roster nor a key — a user resolving an
+    # id is usually doing it *because* the roster has no entry yet.
+    if args.find_model:
+        try:
+            catalog = parse_openrouter_catalog(fetch_openrouter_catalog())
+        except (urllib.error.URLError, json.JSONDecodeError, OSError) as exc:
+            print(f"Error: could not fetch {OPENROUTER_CATALOG_URL}: {exc}", file=sys.stderr)
+            sys.exit(1)
+        hits = filter_catalog(catalog, args.find_model)
+        if not hits:
+            print(
+                f"No model matches {args.find_model!r} "
+                f"({len(catalog)} models in the catalog).",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print(format_catalog(hits))
+        return
 
     # Roster problems are exit 2 — distinct from an API failure (1), so a
     # caller can tell "you configured it wrong" from "the model call failed".
