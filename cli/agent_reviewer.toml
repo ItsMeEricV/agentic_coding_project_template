@@ -41,9 +41,9 @@ tag = "CODEX"
 
 [[models]]
 key = "codex-sol"
-name = "Codex GPT 5.6 Sol — OpenRouter"
+name = "Codex GPT-6 Sol — OpenRouter"
 access_method = "openrouter"
-id = "openai/gpt-5.6-sol"
+id = "openai/gpt-6-sol"
 tag = "CODEX"
 
 [[models]]
