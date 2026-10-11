@@ -13,7 +13,7 @@ If a question can be answered by exploring the codebase, explore the codebase in
 
 ### Scope the tree before grilling
 
-Before asking anything, enumerate the open decisions as a short list and show it to me. Ask which branches matter and which to skip. Prune aggressively — most of the value is in cutting low-stakes branches before they ever become questions.
+Before asking anything, enumerate the open decisions as a short list and show it to me. Ask which branches matter and which to skip. Prune aggressively — most of the value is in cutting low-stakes branches before they ever become questions. One branch always stays: what runnable check proves the work is done (a test command, a build exit code, a file count, an empty queue).
 
 ### Only ask questions that change something
 
@@ -112,3 +112,7 @@ Only offer to write an RFC when all three are true:
 3. **The outcome of a genuine trade-off** — there were real alternatives and one was chosen for specific reasons
 
 If any one is missing, skip the RFC. Follow [RFC-FORMAT.md](./RFC-FORMAT.md).
+
+### Close by naming the execution shape
+
+Finish with one line on how the work should run, then stop and let me choose. Default is a one-shot plan in plan mode. Recommend `/goal <condition>` only when all three hold: the done check from the tree is something a command can prove, the work splits into one-item iterations on a branch, and no step inside the loop is irreversible (deploys, migrations, force-pushes). Recommend `/loop` only when the work is waiting on something external (CI, a deploy, a PR). Give the reason in one sentence. If I already named a mode, don't re-ask. This verdict is conversation output: it never goes in `KNOWLEDGE.md`, and it earns an RFC only by the three-part test above.
