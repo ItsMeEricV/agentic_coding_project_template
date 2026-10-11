@@ -49,3 +49,6 @@ coverage/
 
 # Playwright CLI scratch (page snapshots)
 .playwright-cli/
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
