@@ -3,6 +3,7 @@
 - Always use `rg`, not `grep`.
 - When designing systems with UUID type unique keys, always default to the UUIDv7 format. E.g. `id String @id @default(uuid(7))` in Postgres.
 - **`KNOWLEDGE.md` (or `KNOWLEDGE-MAP.md` pointing to per-area files) is a project's domain glossary** — terms, preferred names, flagged ambiguities. Read it early to ground yourself in a repo's language; update it when a term gets clarified. Created/maintained by the `deep-discuss` skill.
+- When interacting with Cloudflare, use the cf CLI unless the project has a Wrangler configuration file.
 
 ## Communication Style
 
