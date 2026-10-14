@@ -38,3 +38,4 @@ _"I struggled" moments, surprising API behavior, and non-obvious solutions._
 ### Infrastructure
 
 - **Example:** `docker compose restart` does NOT re-read `env_file`. Must use `docker compose up -d` to pick up new env vars.
+- **Discord deploy alerts use a plain webhook, not the official `discord` plugin.** The plugin is a two-way bot bridge: it needs Bun, a bot token, per-channel opt-in, and only connects when the session is launched with `--channels plugin:discord@claude-plugins-official` — silently absent otherwise. A webhook URL in `~/.claude/channels/discord/.env` works in every session with one `curl`.

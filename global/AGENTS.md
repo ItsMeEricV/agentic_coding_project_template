@@ -47,12 +47,18 @@ After formatter/linter/type-check pass:
 
 **PR description rules worth restating here** (the `pull-request-creator` skill owns the full template):
 
-- Add a `Co-Authored-By:` line using your current model version (e.g. `Co-Authored-By: Claude 4.6`).
+- End the body with a `Co-Authored-By:` line using your current model version (e.g. `Co-Authored-By: Claude Fable 5.1`).
 - **Always use descriptive link text** — never naked URLs.
   - ❌ Bad: `https://<workspace>.slack.com/archives/<channel-id>/<ts>`
   - ✅ Good: `[Internal user report about missing "Mark as read" option](https://<workspace>.slack.com/archives/<channel-id>/<ts>)`
-- **Commit-by-commit review note:** under "Notes for Reviewers", say each commit is self-contained and can be reviewed individually.
 - **Skip `pr-review-toolkit` on simple PRs** — token cost outweighs signal. Don't run it (and don't suggest it) when any of these hold: docs/`.md`-only changes, tests-only changes, or under 500 lines of code changed. This overrides the `pull-request-creator` skill's default to always run it.
+
+### What to Watch — alert route and observability sources
+
+The `pull-request-creator` skill's **What to Watch** block is read by a loop agent after deploy. These declarations are the user-level defaults; a project's own `AGENTS.md` overrides them outright when it declares its own.
+
+- **Deploy alerts:** Discord `#notifications-agent` via webhook. URL lives in `~/.claude/channels/discord/.env` as `DISCORD_ALERT_WEBHOOK_URL` (machine-local, never committed). `PushNotification` always fires alongside it.
+- **Observability sources:** `sentry` (via the `sentry-cli` skill), `axiom` (no tool connected yet — items naming it are dropped at preflight until one is). A What to Watch item may only name a source listed here, and the author verifies the tool is reachable before writing the item.
 
 ## Code Style & Formatting
 
