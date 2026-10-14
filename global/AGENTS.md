@@ -47,7 +47,7 @@ After formatter/linter/type-check pass:
 
 **PR description rules worth restating here** (the `pull-request-creator` skill owns the full template):
 
-- End the body with a `Co-Authored-By:` line using your current model version (e.g. `Co-Authored-By: Claude Fable 5.1`).
+- End the body with a `Co-Authored-By:` line using your current model version (e.g. `Co-Authored-By: Claude Fable 5.1`). That trailer is the only attribution — do not add the harness's `🤖 Generated with Claude Code` line.
 - **Always use descriptive link text** — never naked URLs.
   - ❌ Bad: `https://<workspace>.slack.com/archives/<channel-id>/<ts>`
   - ✅ Good: `[Internal user report about missing "Mark as read" option](https://<workspace>.slack.com/archives/<channel-id>/<ts>)`
