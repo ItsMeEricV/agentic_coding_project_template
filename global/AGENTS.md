@@ -58,7 +58,7 @@ After formatter/linter/type-check pass:
 The `pull-request-creator` skill's **What to Watch** block is read by a loop agent after deploy. These declarations are the user-level defaults; a project's own `AGENTS.md` overrides them outright when it declares its own.
 
 - **Deploy alerts:** Discord `#notifications-agent` via webhook. URL lives in `~/.claude/channels/discord/.env` as `DISCORD_ALERT_WEBHOOK_URL` (machine-local, never committed). `PushNotification` always fires alongside it.
-- **Observability sources:** `sentry` (via the `sentry-cli` skill), `axiom` (no tool connected yet — items naming it are dropped at preflight until one is). A What to Watch item may only name a source listed here, and the author verifies the tool is reachable before writing the item.
+- **Observability sources:** `sentry` (via the `sentry-cli` skill). Project-scoped MCPs (Axiom, Sentry MCP) belong in that project's `AGENTS.md`, not here. A What to Watch item may only name a declared source, and the author verifies the tool is reachable before writing the item.
 
 ## Code Style & Formatting
 
