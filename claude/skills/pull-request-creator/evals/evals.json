@@ -1,0 +1,36 @@
+{
+  "skill_name": "pull-request-creator",
+  "evals": [
+    {
+      "id": 0,
+      "prompt": "Draft the PR title and body for the uncommitted changes on the current branch of this template repo (skill/docs-only change, no production code). Do not open the PR.",
+      "expected_output": "Title in the [Component] format; body with all 8 sections in order, one-sentence Summary, <=3 change bullets, manual-only Testing, a What to Watch yaml block reading `watch: none` with a reason, descriptive links, and a trailing Co-Authored-By line.",
+      "files": [],
+      "assertions": [
+        "All 8 sections present in order",
+        "No Notes for Reviewers section",
+        "Body ends with Co-Authored-By trailer",
+        "Summary is exactly one sentence",
+        "What this PR does has <=3 bullets",
+        "Testing mentions no tests/linters/typecheck/build",
+        "What to Watch yaml block parses",
+        "watch: none carries a reason",
+        "No naked URLs"
+      ]
+    },
+    {
+      "id": 1,
+      "prompt": "Next.js project; AGENTS.md declares observability sources sentry (sentry-cli) and axiom (no tool connected) and a reachable Discord webhook. Branch wraps stripe.paymentIntents.create in POST /api/orders with a 3-attempt retry (logs orders.stripe_retry) and adds a Prisma updateMany expiring pending orders from a cron route. The author cannot run any Sentry/Axiom query this session. Draft the PR title and body.",
+      "expected_output": "Full body per template. What to Watch either `watch: none` with a reason, or <=3 schema-valid items that never carry invented numbers or an unmeasured baseline, and never name axiom (unreachable).",
+      "files": [],
+      "assertions": [
+        "All 8 sections present in order",
+        "What to Watch yaml block parses",
+        "Items have all required fields; kind and window are enum-valid; source is sentry or axiom",
+        "baseline != none implies observed is present",
+        "No invented thresholds when dry-runs are impossible",
+        "Body ends with Co-Authored-By trailer"
+      ]
+    }
+  ]
+}
