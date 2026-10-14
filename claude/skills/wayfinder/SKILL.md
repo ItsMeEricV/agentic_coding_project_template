@@ -1,6 +1,6 @@
 ---
 name: wayfinder
-description: Chart a chunk of work too big for one agent session as a shared map of decision tickets on GitHub Issues, then resolve them one at a time until the way to the destination is clear. Use when an idea is large and foggy — "chart a map", "wayfind this", "too big to plan in one session" — or when invoked with an existing wayfinder map.
+description: Chart a chunk of work too big for one agent session as a shared map of decision tickets on GitHub Issues, resolve them one at a time until the way to the destination is clear, then roadmap the build as implementation tickets planned for parallel execution. Use when an idea is large and foggy — "chart a map", "wayfind this", "too big to plan in one session" — when invoked with an existing wayfinder map, or when a closed map needs its implementation roadmap.
 disable-model-invocation: true
 ---
 
@@ -20,7 +20,7 @@ This is also why the frontmatter carries `disable-model-invocation: true`. Wayfi
 
 ## Plan, don't do
 
-Wayfinder is **planning** by default: each ticket resolves a decision, and the map is done when the way is clear, with nothing left to decide before someone goes and does the thing. The pull to just do the work is usually the signal you've reached the edge of the map and it's time to hand off — reach for the `handoff` skill there. An effort can override this in its **Notes**, carrying execution into the map itself, but absent that, produce decisions, not deliverables.
+Wayfinder is **planning** by default: each ticket resolves a decision, and the map is done when the way is clear, with nothing left to decide before someone goes and does the thing. The pull to just do the work is usually the signal you've reached the edge of the map: the next move is [Roadmap the build](#roadmap-the-build), which turns the cleared way into implementation tickets scheduled for parallel execution, and then the `handoff` skill. An effort can override this in its **Notes**, carrying execution into the map itself, but absent that, produce decisions, not deliverables.
 
 ## Refer by name
 
@@ -124,7 +124,7 @@ Terms the effort pins down go to `KNOWLEDGE.md` as `deep-discuss` prescribes, in
 
 ## Invocation
 
-Two modes. Either way, **never resolve more than one ticket per session**, with the exception of research tickets.
+Three modes. In the first two, **never resolve more than one ticket per session**, with the exception of research tickets.
 
 ### Chart the map
 
@@ -149,3 +149,30 @@ User invokes with a map (URL or number). A ticket is **optional**: without one, 
 5. Add newly-surfaced tickets (create-then-wire); graduate any fog the answer has made specifiable, clearing each graduated patch from **Not yet specified** so it lives only as its new ticket. If the answer reveals that a ticket (this one or another) sits beyond the destination, **rule it out of scope** rather than resolving it on the route. If the decision invalidates other parts of the map, update or delete those tickets.
 
 The user may run unblocked tickets in parallel, so expect other sessions to be editing the tracker concurrently. Re-read an issue immediately before you edit it rather than trusting a body you loaded at the top of the session.
+
+### Roadmap the build
+
+User invokes with a map whose way is clear (no open tickets, nothing left in **Not yet specified**). The output is an implementation roadmap and its tickets, **planned for parallel execution from the start**. Tickets opened one milestone at a time, without dependency edges or a schedule, get executed serially by default; that is the failure this phase exists to prevent.
+
+1. **Write the roadmap** (a plan document in the repo, e.g. `docs/superpowers/plans/<date>-<name>-roadmap.md`). One table per milestone, one row per ticket, with a **Needs** column listing the tickets that must merge before it can start. Needs is the dependency graph; derive everything else from it rather than from milestone order.
+2. **Compute the waves.** A ticket's earliest start is when everything in its Needs has merged, so wave 1 is every ticket with no needs, wave 2 is every ticket whose needs are all in wave 1, and so on. Put a **Parallel waves** table at the top of the milestones section: wave, tickets, and the condition that starts each. Every row links its issue once the issues exist. Toy roadmap: A needs nothing, B and C both need A → wave 1: A; wave 2: B, C.
+3. **Propose all implementation issues in one ask**, as one table: ticket, title, blocked by, can start when. Then wait for the explicit "yes, open it" that [Ask before you open a single issue](#ask-before-you-open-a-single-issue) requires. One proposal, one yes, every ticket; never a milestone at a time.
+4. **Create in dependency order**, blockers first, so every edge can be wired as its issue is created. Each body opens with the roadmap pointer and its needs, then a **Can start when** line phrased as a condition, so it stays true as blockers merge:
+
+   ```markdown
+   Roadmap ticket 8 (M1: One step-run in a local sandbox). Needs: #29, #38.
+
+   **Can start when:** #38 merges (#29 is merged). Runs in parallel with #41.
+   ```
+
+   Then wire a native `blocked_by` for **every** need, including needs that are already closed: the relationship is the record, and a closed blocker costs nothing. Recipe, idempotency, and verification in [GITHUB-OPS.md](./GITHUB-OPS.md#create-implementation-tickets-in-dependency-order).
+
+5. **Verify** that each issue's native `blocked_by` set equals its roadmap Needs, then link the issues from the roadmap rows and the waves table, and commit the roadmap.
+6. Stop and hand off (the `handoff` skill). Roadmapping is one session's work; it executes nothing.
+
+**Execution guidance** for the sessions that follow, written into the roadmap so they inherit it:
+
+- Each parallel ticket runs on its own branch, in its own git worktree, in its own Claude Code session. The user's worktree-boundary hook stops a session from writing outside its own tree, so subagents inside one session cannot stand in for parallel sessions.
+- Tasks inside one ticket stay serial.
+- PRs merge in dependency order. The user's review bandwidth is the real limit, not the graph: say in the roadmap how many tickets to run at once, two or three, and prefer finishing a wave over starting the next.
+- When a ticket merges, its dependents' native links resolve on their own, and the **Can start when** text stays correct because it states a condition rather than a status. No body edits are needed on merge.

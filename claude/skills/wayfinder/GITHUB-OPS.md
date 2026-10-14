@@ -66,6 +66,68 @@ gh api --method POST "repos/$REPO/issues/$BLOCKED_NUM/dependencies/blocked_by" -
 
 GitHub renders the result as native `Blocked by` / `Blocks` relationships, which is the point: the human sees what's takeable in the UI without opening the map.
 
+## Create implementation tickets in dependency order
+
+For the **Roadmap the build** phase. Creating blockers first means every edge can be wired the moment its issue exists, with no second pass to forget. The roadmap's Needs column is the input; sort it topologically before you start.
+
+**macOS ships bash 3.2, which has no `declare -A`.** A failed `declare -A` degrades silently into an indexed array, and the ticket-to-issue map then returns empty strings with no error. Keep the map in a JSON file and let Python own the loop:
+
+```bash
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
+# tickets.json: topologically sorted. Each entry: {"ticket": 8, "title": "...", "body_file": "t8.md", "needs": [3, 6]}
+python3 - "$REPO" <<'EOF'
+import json, subprocess, sys
+repo = sys.argv[1]
+issues = {}                                   # roadmap ticket -> issue number
+def gh(*args): return subprocess.run(["gh", *args], check=True, capture_output=True, text=True).stdout.strip()
+for t in json.load(open("tickets.json")):
+    url = gh("issue", "create", "--title", t["title"], "--body-file", t["body_file"])
+    num = int(url.rsplit("/", 1)[1]); issues[t["ticket"]] = num
+    for need in t["needs"]:
+        blocker_id = gh("api", f"repos/{repo}/issues/{issues[need]}", "--jq", ".id")   # database id, not the number
+        gh("api", "--method", "POST", f"repos/{repo}/issues/{num}/dependencies/blocked_by", "-F", f"issue_id={blocker_id}")
+json.dump(issues, open("issues.json", "w"), indent=1)
+EOF
+```
+
+Needs that are already closed get wired too. The native relationship is the record, GitHub accepts a closed blocker, and the frontier query still reads it as satisfied.
+
+### Make body edits idempotent
+
+A **Can start when** line is inserted once. Check for it before inserting, so a re-run (or a second session repairing a batch) doesn't stack duplicates:
+
+```bash
+gh issue view "$NUM" --json body --jq .body > body.md
+if ! grep -q '^\*\*Can start when:\*\*' body.md; then
+  python3 - body.md "$LINE" <<'EOF'
+import sys; path, line = sys.argv[1], sys.argv[2]
+text = open(path).read()
+head, _, rest = text.partition("\n\n")           # insert after the first paragraph (the roadmap pointer)
+open(path, "w").write(f"{head}\n\n{line}\n\n{rest}")
+EOF
+  gh issue edit "$NUM" --body-file body.md
+fi
+```
+
+### Verify after linking
+
+Compare every issue's native `blocked_by` numbers with the roadmap's Needs before you call the batch done. Edges go missing when a create fails mid-loop or a database id lookup returns empty:
+
+```bash
+python3 - "$REPO" <<'EOF'
+import json, subprocess, sys
+repo = sys.argv[1]
+issues = {int(k): v for k, v in json.load(open("issues.json")).items()}   # roadmap ticket -> issue number
+for t in json.load(open("tickets.json")):
+    num = issues[t["ticket"]]
+    out = subprocess.run(["gh", "api", f"repos/{repo}/issues/{num}/dependencies/blocked_by", "--jq", "[.[].number]"], capture_output=True, text=True, check=True).stdout
+    actual = sorted(json.loads(out)); expected = sorted(issues[n] for n in t["needs"])
+    print(("ok  " if actual == expected else "MISMATCH ") + f"#{num}: blocked_by={actual} needs={expected}")
+EOF
+```
+
+Fix any `MISMATCH` line by wiring the missing edge (the POST is idempotent) before linking the issues from the roadmap.
+
 ## Load the map
 
 ```bash
