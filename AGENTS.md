@@ -121,6 +121,13 @@ If your project uses Docker for local development:
 - **Format:** Use prefixes: `Feature:`, `Fix:`, `Chore:`, `Test:`.
 - **Branching:** Always use `main` as the primary branch (or `master` if explicitly configured).
 
+### What to Watch — alert route and observability sources
+
+Declared here so the `pull-request-creator` skill's **What to Watch** block (read by a loop agent after deploy) knows where to alert and which sources an item may name. Leave a line out to inherit the user-level default from `~/.claude/CLAUDE.md`; declare it to override outright.
+
+- **Deploy alerts:** _not declared — inherits user-level default_
+- **Observability sources:** _not declared — inherits user-level default_
+
 ### Inter-Agent Communication
 
 - **Handovers across sessions or agents:** Use the agent's own planning mode for multi-step work, and the `handoff` skill when a task outruns one session or hits a blocker needing another agent's expertise. Do not commit a plan or handoff markdown file to the repo — plans go stale the moment the approach changes, and a stale committed plan misleads every agent that reads it. Work that must outlive the handoff belongs in the task tracker, not in a file. When the work is too big to plan in one session at all, invoke the `wayfinder` skill: it charts the effort as a map of decision tickets on GitHub Issues and resolves one per session.
