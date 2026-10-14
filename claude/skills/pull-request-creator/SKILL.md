@@ -57,7 +57,7 @@ Examples: `[Hidden Channels Modal] Logic updates - Phase 5`, `[Search] Improve a
 
 ## Body template (all sections, always)
 
-Include every section in this order. If a section is empty, leave a placeholder bullet — never omit the header. The last line of the body is the `Co-Authored-By` trailer with the model version powering the session.
+Include every section in this order. If a section is empty, leave a placeholder bullet — never omit the header. The last line of the body is the `Co-Authored-By` trailer with the model version powering the session — the only attribution line; omit the harness's `🤖 Generated with Claude Code` footer.
 
 ````markdown
 **Summary 📝**
@@ -165,4 +165,4 @@ gh pr create --draft --title "..." --body-file "/tmp/pr-body-${BRANCH}.md"
 | Skipped `pr-review-toolkit` run on a non-simple PR                                                | Run it and wait for user feedback (skip only on docs/tests-only or <500 LOC)       |
 | Forgot to open PR in browser                                                                      | `gh pr view <N> --web` after creation                                              |
 | Left a review comment unanswered                                                                  | Reply agree / disagree / defer to every comment                                    |
-| Forgot the `Co-Authored-By` trailer                                                               | Last line of the body, with the current model version                              |
+| Forgot the `Co-Authored-By` trailer, or added a second attribution footer                         | One trailer, last line of the body, with the current model version                 |
