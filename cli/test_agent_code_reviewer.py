@@ -18,13 +18,16 @@ from agent_code_reviewer import (  # noqa: E402
     _build_line_content_index,
     annotate_diff_with_line_numbers,
     build_pr_prompt,
+    churn_by_file,
     diff_char_budget,
     entries_that_fit,
     filter_catalog,
     format_catalog,
+    format_focus_section,
     load_config,
     make_adapter,
     parse_config,
+    parse_focus_areas,
     parse_openrouter_catalog,
 )
 
@@ -327,6 +330,84 @@ class DiffBudgetTests(unittest.TestCase):
         needed_chars = 759_000 * 4  # a ~760K-token diff; only the 1M window takes it
         fits = entries_that_fit(roster, needed_chars=needed_chars, overhead_chars=5_000)
         self.assertEqual([e.key for e in fits], ["big"])
+
+
+TWO_FILE_DIFF = """diff --git a/core/router.ts b/core/router.ts
+--- a/core/router.ts
++++ b/core/router.ts
+@@ -1,2 +1,3 @@
+ keep
+-old
++new one
++new two
+diff --git a/docs/x.md b/docs/x.md
+--- a/docs/x.md
++++ b/docs/x.md
+@@ -1,1 +1,1 @@
+-a
++b
+"""
+
+
+class ChurnTests(unittest.TestCase):
+    def test_counts_added_and_removed_lines_per_file_descending(self):
+        self.assertEqual(churn_by_file(TWO_FILE_DIFF), [("core/router.ts", 3), ("docs/x.md", 2)])
+
+    def test_file_headers_are_not_counted(self):
+        diff = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,1 +1,1 @@\n-x\n+y\n"
+        self.assertEqual(churn_by_file(diff), [("f", 2)])
+
+    def test_empty_diff(self):
+        self.assertEqual(churn_by_file(""), [])
+
+
+class FocusAreaTests(unittest.TestCase):
+    GOOD = {
+        "title": "Cancel vs. abandon race",
+        "invariant": "a cancelled task always ends in abandonStepRun(cancelled)",
+        "paths": ["apps/dispatcher-core/src/workflows/session-workflow.ts"],
+        "why": "the abandon implementation is outside this diff",
+    }
+
+    def test_absent_key_is_empty(self):
+        self.assertEqual(parse_focus_areas({"summary": "s", "comments": []}), [])
+
+    def test_parses_well_formed_entries(self):
+        areas = parse_focus_areas({"focus_areas": [self.GOOD]})
+        self.assertEqual(len(areas), 1)
+        self.assertEqual(areas[0].title, "Cancel vs. abandon race")
+        self.assertEqual(areas[0].paths, ["apps/dispatcher-core/src/workflows/session-workflow.ts"])
+
+    def test_drops_malformed_entries_and_non_string_paths(self):
+        bad = [
+            "not a dict",
+            {"title": "no invariant", "paths": ["a"]},
+            {**self.GOOD, "paths": "a-string-not-a-list"},
+            {**self.GOOD, "paths": ["ok", 7]},
+        ]
+        areas = parse_focus_areas({"focus_areas": bad})
+        self.assertEqual(len(areas), 1)
+        self.assertEqual(areas[0].paths, ["ok"])
+
+    def test_caps_at_three(self):
+        many = [{**self.GOOD, "title": f"t{i}"} for i in range(6)]
+        self.assertEqual(len(parse_focus_areas({"focus_areas": many})), 3)
+
+    def test_tolerates_non_list(self):
+        self.assertEqual(parse_focus_areas({"focus_areas": "nope"}), [])
+
+
+class FocusSectionTests(unittest.TestCase):
+    def test_empty_when_no_areas(self):
+        self.assertEqual(format_focus_section([]), "")
+
+    def test_lists_each_area_with_invariant_and_paths(self):
+        areas = parse_focus_areas({"focus_areas": [FocusAreaTests.GOOD]})
+        section = format_focus_section(areas)
+        self.assertIn("### Suggested focused passes", section)
+        self.assertIn("**Cancel vs. abandon race**", section)
+        self.assertIn("abandonStepRun(cancelled)", section)
+        self.assertIn("`apps/dispatcher-core/src/workflows/session-workflow.ts`", section)
 
 
 class BuildPrPromptTests(unittest.TestCase):

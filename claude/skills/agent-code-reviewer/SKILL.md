@@ -20,7 +20,7 @@ Flag enumeration, env-var setup, and exit codes live in the script's `--help` an
 | "User named a model — invoke this skill"                      | Depends on the verb. If they want that model to **review** code, use this skill. If they want it to **write, fix, or refactor** code, that is delegation, which this skill never does — hand off to whatever delegation skill the harness provides for that model (e.g. `codex:rescue` from the OpenAI Codex plugin), or tell the user no such skill is installed. |
 | "Every PR deserves a second opinion before merge"             | Token cost is real. Reserve second opinions for PRs that touch auth, money, migrations, or new subsystems. Trivial chores don't earn a review.                                                                                                                                                                                                                     |
 | "Reviewer disagreed — apply their fix"                        | Reviewers are wrong constantly. Treat their output as input, not instruction. Push back in-conversation when you have a stronger argument; don't silently capitulate.                                                                                                                                                                                              |
-| "The diff is huge — I'll review it one package at a time"     | Slicing by layer hands the reviewer a router with no workflow, or a workflow with no store, so it flags contracts the other layer enforces. Send it whole; the script sizes the diff to the model's window and refuses what won't fit. Slice by vertical only after a refusal — see [Sizing and context](#sizing-and-context-for---pr).                            |
+| "The diff is huge — I'll review it one package at a time"     | Slicing by layer hands the reviewer a router with no workflow, or a workflow with no store, so it flags contracts the other layer enforces. Send it whole first; then add vertical slices chosen from the reviewer's `focus_areas` and `ARCHITECTURE.md`'s invariants — see [Choosing vertical slices](#choosing-vertical-slices).                                 |
 | "The reviewer read the spec literally, but I chose otherwise" | That is not a Disagree. If the reviewer's reading matches the approved text and you deliberately deviated, the user decides — reply **Escalate**, not Disagree.                                                                                                                                                                                                    |
 | "I'll skim the reviewer output and pick what looks good"      | Edge-case flags and security/migration concerns deserve a deliberate accept/disagree/defer reply per comment, same as a human reviewer. Cherry-picking trains you to ignore the parts that matter.                                                                                                                                                                 |
 
@@ -75,9 +75,19 @@ A model reachable only through a direct provider API (a preview id OpenRouter ha
 
 ## Sizing and context for `--pr`
 
-One pass over the whole diff is the default. The script sizes the diff to the entry's `context_window` and refuses one that does not fit (exit 3) instead of truncating it. A refusal names the roster entries that would take the diff; switch to one of those first.
+A load-bearing PR gets two kinds of pass, and they catch different bugs:
 
-Slice only when no entry takes it whole, and slice **by vertical, never by layer**: one invariant's router, workflow, and store go in the same pass, with `--ignore-path` dropping the rest. A reviewer that sees the router without the workflow that produces its events, or the workflow without the service that ends its rows, flags contracts the missing layer enforces — every such finding is a false positive you then have to disprove on the PR.
+1. **One whole-diff pass, always.** The script sizes the diff to the entry's `context_window` and refuses one that does not fit (exit 3) instead of truncating it; a refusal names the entries that would take it, so switch model rather than split. This pass sees every layer, so it is the one that judges cross-layer contracts correctly.
+2. **Up to three vertical slices on the riskiest areas.** Attention per line drops as the prompt grows, so the races and off-by-one-attempt bugs that four small passes found on a 190K-token PR will not all surface in one. A slice is one invariant's router, workflow, and store together, `--ignore-path` dropping the rest, `--file` attaching the sibling interfaces it still depends on, and the invariant as the question. Never slice **by layer**: a reviewer that sees the router without the workflow that produces its events flags contracts the missing layer enforces, and every such finding is a false positive you then disprove on the PR.
+
+### Choosing vertical slices
+
+Rank candidate areas by how grounded the source is in this diff, merge, dedupe by file overlap, and keep at most three:
+
+1. **Reviewer-nominated.** The whole-diff pass may return `focus_areas`: invariants it could not settle from the diff alone, with the files a focused pass must see together. They are posted under "Suggested focused passes" in the review body and written, with per-file churn, to `/tmp/agent_reviewer_pr<N>_focus.json`. Read that file first. Nominating "the hard part is here" survives a long prompt far better than finding the bug in it, which is why this source ranks first — but it must never be the only one, since the inattention that misses a race can also miss nominating its area.
+2. **Project-declared.** `ARCHITECTURE.md` lists the system's invariants with the paths that enforce them; any invariant whose paths this diff touches is a candidate. `KNOWLEDGE.md`'s flagged ambiguities mark places the team itself is unsure — a touched term there is a candidate too. `AGENTS.md` rules are generic and feed the floor below, not slice selection.
+3. **Diff-derived.** From the focus file's `churn`: the most-changed files, and code changes with no matching test changes. Both are objective and cost nothing.
+4. **Hardcoded floor.** Always check for: shared mutable state, retry and idempotency paths, authorization boundaries, migrations, money. Keep this list short; it exists so an empty nomination list still gets a slice, not to define risk.
 
 Give the reviewer the rationale, not a rule list. A paragraph of "binding rules" in the prompt turns the model into a linter that tags every deliberate deviation HIGH. Attach the design doc or decision log instead, with `--file` (repeatable; it rides along as read-only context the reviewer judges the diff against but does not comment on):
 
@@ -85,7 +95,13 @@ Give the reviewer the rationale, not a rule list. A paragraph of "binding rules"
 uv run cli/agent_code_reviewer.py --pr 67 --file docs/rfcs/0009-session-workflow.md "Focus on cancellation and retry paths"
 ```
 
-When a slice is unavoidable, attach the sibling layer's interface file the same way so the contract is in the prompt even though its implementation is not.
+A slice attaches the sibling layer's interface file the same way, so the contract is in the prompt even though its implementation is not, and names the invariant from the focus area or `ARCHITECTURE.md` as its question:
+
+```bash
+uv run cli/agent_code_reviewer.py --pr 67 --ignore-path 'packages/config-schema/' --ignore-path 'docs/' \
+  --file packages/core/session/session-service.ts --file docs/rfcs/0009-session-workflow.md \
+  "Check one invariant: a cancelled task always ends in abandonStepRun(cancelled), and no sandbox outlives its session."
+```
 
 ## Reading reviewer output
 
@@ -141,5 +157,5 @@ The script's `--help` covers the full env-var list and setup steps. The two non-
 - **Run it with `uv run`.** The script declares its dependencies in a PEP 723 header, so `uv run cli/agent_code_reviewer.py …` resolves them per-run with no venv to manage. Bare `python3` works for every access method except `openrouter`, whose SDK import will fail.
 - **API keys live in your shell profile or `~/.claude/settings.json`**, one per access method: `GEMINI_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`. `--list` shows which are set. A user missing one sees a clear error naming the var; tell them to set it, do not try to work around it.
 - **Exit code 2 means the roster is wrong** (bad TOML, unknown `--model` key), not that the API failed. Fix the invocation or the config — do not retry.
-- **Exit code 3 means the diff does not fit the model's window.** The message names roster entries that would take it. Switch model, or slice by vertical — see [Sizing and context](#sizing-and-context-for---pr). Never retry the same entry.
+- **Exit code 3 means the diff does not fit the model's window.** The message names roster entries that would take it. Switch model; slicing is for risk, not for size — see [Sizing and context](#sizing-and-context-for---pr). Never retry the same entry.
 - **Gemini's free tier rate limits are too low for PR review.** A Tier-1 paid key is the practical minimum. If a user hits rate limits, escalating to paid is the fix, not retry-with-backoff.

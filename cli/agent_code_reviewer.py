@@ -44,6 +44,12 @@ PR Review Mode (--pr):
   attaches design docs or sibling-layer code as read-only context so the
   reviewer judges the diff against the real contract, not a guess at it.
 
+  Besides its comments the reviewer may nominate up to three focus areas: an
+  invariant it could not settle from the diff alone, and the files that
+  enforce it. They go in the review body and, with per-file churn, into
+  /tmp/agent_reviewer_pr<N>_focus.json for the skill to turn into vertical
+  slices (`--ignore-path` to the area, `--file` for its sibling interfaces).
+
 Conversation History:
   - One file per roster entry: /tmp/agent_reviewer_<key>.json
   - Persists across invocations; cleared on system reboot or via --reset.
@@ -143,7 +149,15 @@ PR_REVIEW_SYSTEM_PROMPT: str = (
     '  - "code_excerpt": A VERBATIM copy of the targeted line\'s code (without the `L<lineno>` '
     "prefix and without the diff marker `+`/space; preserve leading indentation and the rest of "
     "the line exactly). This is used to snap your comment to the right line if `line` is off.\n"
-    '  - "body": The review comment (use markdown). Prefix with severity: 🔴 CRITICAL, 🟠 HIGH, 🟡 MEDIUM, 🔵 LOW\n\n'
+    '  - "body": The review comment (use markdown). Prefix with severity: 🔴 CRITICAL, 🟠 HIGH, 🟡 MEDIUM, 🔵 LOW\n'
+    '- "focus_areas": OPTIONAL, at most 3. Areas where you are UNCERTAIN whether an invariant '
+    "holds and a focused second pass, with the code that enforces it attached, would settle "
+    "it. Not places you already commented on, and not a restatement of your comments. Each has:\n"
+    '  - "title": a short name for the area\n'
+    '  - "invariant": the property to check, stated so a reviewer could test it\n'
+    '  - "paths": files in or beside this diff a focused pass must see together\n'
+    '  - "why": what in this diff left it unsettled (a producer or enforcer you could not see, '
+    "a race you could not trace to its end)\n\n"
     "Only comment on lines that are ADDED or CHANGED (+ lines in the diff). "
     "Do NOT comment on deleted lines or unchanged context lines. "
     "NEVER put praise in an inline comment — every entry in `comments` must flag something "
@@ -209,6 +223,19 @@ class ModelEntry:
 
 class DiffTooLargeError(Exception):
     """A --pr diff that overflows the selected entry's window. main() exits 3."""
+
+
+MAX_FOCUS_AREAS: int = 3
+
+
+@dataclass(frozen=True)
+class FocusArea:
+    """An invariant the whole-diff pass could not settle; a candidate vertical slice."""
+
+    title: str
+    invariant: str
+    paths: list[str]
+    why: str
 
 
 @dataclass(frozen=True)
@@ -1174,6 +1201,75 @@ def entries_that_fit(roster: Roster, needed_chars: int, overhead_chars: int) -> 
     ]
 
 
+def churn_by_file(diff: str) -> list[tuple[str, int]]:
+    """Added plus removed lines per file, most churned first. File headers do not count."""
+    counts: dict[str, int] = {}
+    current: str | None = None
+    for line in diff.splitlines():
+        match = re.match(r"diff --git a/(\S+) b/(\S+)", line)
+        if match:
+            current = match.group(2)
+            counts.setdefault(current, 0)
+            continue
+        if current is None or line.startswith(("+++", "---")):
+            continue
+        if line.startswith(("+", "-")):
+            counts[current] += 1
+    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+
+
+def parse_focus_areas(review: dict) -> list[FocusArea]:
+    """The reviewer's `focus_areas`, malformed entries dropped, capped at MAX_FOCUS_AREAS."""
+    raw = review.get("focus_areas")
+    if not isinstance(raw, list):
+        return []
+    areas: list[FocusArea] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        title, invariant, why = (item.get(k) for k in ("title", "invariant", "why"))
+        paths = item.get("paths")
+        if not all(isinstance(v, str) and v for v in (title, invariant)):
+            continue
+        if not isinstance(paths, list):
+            continue
+        areas.append(
+            FocusArea(
+                title=title,
+                invariant=invariant,
+                paths=[p for p in paths if isinstance(p, str) and p],
+                why=why if isinstance(why, str) else "",
+            )
+        )
+        if len(areas) == MAX_FOCUS_AREAS:
+            break
+    return areas
+
+
+def format_focus_section(areas: list[FocusArea]) -> str:
+    """Markdown for the review body: what a focused pass should check, and where."""
+    if not areas:
+        return ""
+    lines = ["", "### Suggested focused passes", ""]
+    for area in areas:
+        paths = ", ".join(f"`{p}`" for p in area.paths) or "_no paths named_"
+        why = area.why.rstrip(".") + ". " if area.why else ""
+        lines.append(f"- **{area.title}** — {area.invariant.rstrip('.')}. {why}Files: {paths}")
+    return "\n".join(lines)
+
+
+def write_focus_file(pr_number: str, areas: list[FocusArea], churn: list[tuple[str, int]]) -> Path:
+    """Machine-readable hand-off for the skill, beside the history files."""
+    path = Path(f"/tmp/agent_reviewer_pr{pr_number}_focus.json")
+    payload = {
+        "pr": pr_number,
+        "focus_areas": [vars(a) for a in areas],
+        "churn": [{"path": p, "lines": n} for p, n in churn],
+    }
+    path.write_text(json.dumps(payload, indent=2) + "\n")
+    return path
+
+
 def build_pr_prompt(
     annotated_diff: str,
     context_block: str,
@@ -1301,9 +1397,15 @@ def review_pr(
 
     summary = review.get("summary", "No summary provided.")
     comments = review.get("comments", [])
+    areas = parse_focus_areas(review)
 
     print(f"\n{summary}\n", file=sys.stderr)
     print(f"  {len(comments)} inline comment(s)", file=sys.stderr)
+    focus_path = write_focus_file(pr_number, areas, churn_by_file(diff))
+    print(f"  {len(areas)} focus area(s) for vertical slices -> {focus_path}", file=sys.stderr)
+    for area in areas:
+        print(f"    - {area.title}: {', '.join(area.paths)}", file=sys.stderr)
+    summary += format_focus_section(areas)
 
     # Post to GitHub — the model saw the whole filtered diff, so anchors
     # validate against exactly what it reviewed.
