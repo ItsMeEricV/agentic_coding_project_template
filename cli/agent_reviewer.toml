@@ -90,9 +90,9 @@ context_window = 1_050_000
 # Cheap tier — sanity passes on small diffs, not architecture or security review.
 [[models]]
 key = "gemini-lite"
-name = "Gemini 3.1 Flash Lite — Google API"
+name = "Gemini 3.5 Flash Lite — Google API"
 access_method = "gemini_api"
-id = "gemini-3.1-flash-lite-preview"
+id = "gemini-3.5-flash-lite"
 context_window = 1_050_000
 tag = "GEMINI"
 
