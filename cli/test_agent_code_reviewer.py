@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import sys
 import unittest
+import urllib.error
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -14,19 +15,30 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from agent_code_reviewer import (  # noqa: E402
     DEFAULT_CONTEXT_WINDOW,
     REPLY_RESERVE_TOKENS,
+    DEFAULT_IGNORE_PATHS,
+    MAX_SLICE_RUNS,
+    SLICE_GATE_TOKENS,
     ConfigError,
+    FocusArea,
     _build_line_content_index,
+    _path_matches_any,
     annotate_diff_with_line_numbers,
     build_pr_prompt,
     check_versions,
     churn_by_file,
     diff_char_budget,
+    drop_already_posted,
     entries_that_fit,
     filter_catalog,
+    filter_diff,
+    focus_file_path,
+    prune_focus_paths,
+    slice_gate_reason,
     format_catalog,
     format_focus_section,
     format_version_report,
     is_prerelease,
+    is_transient,
     load_config,
     make_adapter,
     model_family,
@@ -351,6 +363,156 @@ diff --git a/docs/x.md b/docs/x.md
 -a
 +b
 """
+
+
+class IgnorePathTests(unittest.TestCase):
+    def test_bracketed_route_path_matches_literally(self):
+        path = "app/api/auth/[...nextauth]/route.ts"
+        self.assertTrue(_path_matches_any(path, [path]))
+
+    def test_directory_prefix_and_glob_still_match(self):
+        self.assertTrue(_path_matches_any("docs/a/b.md", ["docs/"]))
+        self.assertTrue(_path_matches_any("x/y.snap", ["*.snap"]))
+        self.assertFalse(_path_matches_any("src/y.ts", ["docs/", "*.snap"]))
+
+    def test_default_ignores_drop_lockfiles_at_any_depth(self):
+        diff = (
+            "diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml\n+x\n"
+            "diff --git a/src/a.ts b/src/a.ts\n+y\n"
+        )
+        kept, dropped = filter_diff(diff, list(DEFAULT_IGNORE_PATHS))
+        self.assertEqual(dropped, ["pnpm-lock.yaml"])
+        self.assertIn("src/a.ts", kept)
+
+
+class OnlyPathTests(unittest.TestCase):
+    DIFF = (
+        "diff --git a/core/session/a.ts b/core/session/a.ts\n+a\n"
+        "diff --git a/apps/api/b.ts b/apps/api/b.ts\n+b\n"
+        "diff --git a/core/session/a.test.ts b/core/session/a.test.ts\n+t\n"
+    )
+
+    def test_only_keeps_matching_blocks(self):
+        kept, dropped = filter_diff(self.DIFF, [], ["core/session/"])
+        self.assertIn("core/session/a.ts", kept)
+        self.assertNotIn("apps/api/b.ts", kept)
+        self.assertEqual(dropped, ["apps/api/b.ts"])
+
+    def test_ignore_still_applies_inside_only(self):
+        kept, dropped = filter_diff(self.DIFF, ["*.test.ts"], ["core/session/"])
+        self.assertNotIn("a.test.ts", kept)
+        self.assertEqual(sorted(dropped), ["apps/api/b.ts", "core/session/a.test.ts"])
+
+    def test_no_patterns_is_identity(self):
+        self.assertEqual(filter_diff(self.DIFF, [], []), (self.DIFF, []))
+
+
+class FocusFileTests(unittest.TestCase):
+    def test_path_is_scoped_by_repo(self):
+        self.assertEqual(
+            focus_file_path("68", "acme_werkshop"), Path("/tmp/agent_reviewer_acme_werkshop_pr68_focus.json")
+        )
+        self.assertEqual(focus_file_path("68", ""), Path("/tmp/agent_reviewer_pr68_focus.json"))
+
+    def test_prune_drops_paths_absent_from_diff_and_disk(self):
+        area = FocusArea("t", "inv", ["infra/main.tf", "src/real.ts", "cli/agent_code_reviewer.py"], "why")
+        (pruned,) = prune_focus_paths([area], {"src/real.ts"})
+        self.assertEqual(pruned.paths, ["src/real.ts", "cli/agent_code_reviewer.py"])
+        self.assertEqual((pruned.title, pruned.invariant, pruned.why), ("t", "inv", "why"))
+
+
+class _StatusError(Exception):
+    def __init__(self, status_code: int):
+        super().__init__(f"status {status_code}")
+        self.status_code = status_code
+
+
+class RetryTests(unittest.TestCase):
+    def _adapter(self, outcomes):
+        adapter = make_adapter(load_config().default_entry())
+        calls = []
+
+        def call_api(request_body):
+            calls.append(request_body)
+            outcome = outcomes.pop(0)
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return outcome
+
+        adapter.call_api = call_api
+        return adapter, calls
+
+    def test_classifies_transient_errors(self):
+        http = lambda code: urllib.error.HTTPError("u", code, "m", {}, None)  # noqa: E731
+        self.assertTrue(is_transient(http(429)))
+        self.assertTrue(is_transient(http(503)))
+        self.assertFalse(is_transient(http(401)))
+        self.assertTrue(is_transient(urllib.error.URLError("down")))
+        self.assertTrue(is_transient(TimeoutError()))
+        self.assertTrue(is_transient(_StatusError(429)))
+        self.assertFalse(is_transient(_StatusError(400)))
+        self.assertFalse(is_transient(ValueError("bad json")))
+
+    def test_retries_transient_then_succeeds(self):
+        adapter, calls = self._adapter([_StatusError(429), _StatusError(502), {"ok": True}])
+        slept = []
+        self.assertEqual(adapter.call({"m": 1}, sleep=slept.append), {"ok": True})
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(slept, [2.0, 8.0])
+
+    def test_gives_up_after_backoffs_exhausted(self):
+        adapter, calls = self._adapter([_StatusError(429)] * 3)
+        with self.assertRaises(_StatusError):
+            adapter.call({}, sleep=lambda _s: None)
+        self.assertEqual(len(calls), 3)
+
+    def test_non_transient_fails_immediately(self):
+        adapter, calls = self._adapter([_StatusError(401), {"never": True}])
+        with self.assertRaises(_StatusError):
+            adapter.call({}, sleep=lambda _s: None)
+        self.assertEqual(len(calls), 1)
+
+
+class DedupeTests(unittest.TestCase):
+    def test_drops_only_exact_path_and_line_matches(self):
+        comments = [
+            {"path": "a.ts", "line": 10, "body": "x"},
+            {"path": "a.ts", "line": 11, "body": "y"},
+            {"path": "b.ts", "line": 10, "body": "z"},
+        ]
+        kept = drop_already_posted(comments, {("a.ts", 10)})
+        self.assertEqual([(c["path"], c["line"]) for c in kept], [("a.ts", 11), ("b.ts", 10)])
+
+    def test_empty_posted_set_is_identity(self):
+        comments = [{"path": "a.ts", "line": 1, "body": "x"}]
+        self.assertEqual(drop_already_posted(comments, set()), comments)
+
+
+class SliceGateTests(unittest.TestCase):
+    NOMINATED = {"head": "abc1234", "diff_tokens": 40_000, "focus_areas": [{"title": "t"}], "slices": []}
+    QUIET_SMALL = {"head": "abc1234", "diff_tokens": 40_000, "focus_areas": [], "slices": []}
+    QUIET_LARGE = {"head": "abc1234", "diff_tokens": SLICE_GATE_TOKENS, "focus_areas": [], "slices": []}
+
+    def test_no_whole_pass_refuses(self):
+        self.assertIn("no whole-diff pass", slice_gate_reason(None, "abc1234"))
+
+    def test_nomination_admits(self):
+        self.assertIsNone(slice_gate_reason(self.NOMINATED, "abc1234"))
+
+    def test_quiet_small_pass_refuses(self):
+        self.assertIn("nominated no focus area", slice_gate_reason(self.QUIET_SMALL, "abc1234"))
+
+    def test_quiet_large_pass_admits(self):
+        self.assertIsNone(slice_gate_reason(self.QUIET_LARGE, "abc1234"))
+
+    def test_moved_head_refuses(self):
+        self.assertIn("PR is now at", slice_gate_reason(self.NOMINATED, "fff9999"))
+
+    def test_cap_refuses_fourth_slice(self):
+        full = {**self.NOMINATED, "slices": ["s"] * MAX_SLICE_RUNS}
+        self.assertIn("already run", slice_gate_reason(full, "abc1234"))
+        almost = {**self.NOMINATED, "slices": ["s"] * (MAX_SLICE_RUNS - 1)}
+        self.assertIsNone(slice_gate_reason(almost, "abc1234"))
 
 
 class ChurnTests(unittest.TestCase):

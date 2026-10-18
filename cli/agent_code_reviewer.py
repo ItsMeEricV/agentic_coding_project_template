@@ -34,6 +34,9 @@ PR Review Mode (--pr):
   Fetches the PR diff via `gh`, sends it to the selected model for line-level
   review, and posts comments directly on the PR as inline review comments.
   Each comment is prefixed with the entry's attribution tag, e.g. **[GEMINI]**.
+  A comment at a file and line that tag already commented on is skipped, so a
+  repeat run does not restate settled points. `--dry-run` prints the review
+  as JSON instead of posting it.
 
     uv run cli/agent_code_reviewer.py --pr 60
     uv run cli/agent_code_reviewer.py --model codex --pr 60
@@ -48,8 +51,12 @@ PR Review Mode (--pr):
   Besides its comments the reviewer may nominate up to three focus areas: an
   invariant it could not settle from the diff alone, and the files that
   enforce it. They go in the review body and, with per-file churn, into
-  /tmp/agent_reviewer_pr<N>_focus.json for the skill to turn into vertical
-  slices (`--ignore-path` to the area, `--file` for its sibling interfaces).
+  /tmp/agent_reviewer_<owner>_<repo>_pr<N>_focus.json for the skill to turn
+  into vertical slices (`--only-path` to the area's files, `--file` for its
+  sibling interfaces). A run with --only-path or --ignore-path is a slice: it
+  leaves that file's nominations alone and is admitted only if the whole pass
+  recorded there nominated an area or ran over 150K tokens, judged the same
+  PR head, and has had fewer than three slices since (exit 4 otherwise).
 
 Conversation History:
   - One file per roster entry: /tmp/agent_reviewer_<key>.json
@@ -65,7 +72,9 @@ Usage:
   uv run cli/agent_code_reviewer.py --file path/to/file.ts "Review this code"
   uv run cli/agent_code_reviewer.py --pr 60 --file docs/rfcs/0009.md --file core/session.ts
   uv run cli/agent_code_reviewer.py --pr 60 "Focus on error handling"
+  uv run cli/agent_code_reviewer.py --pr 60 --only-path 'core/session/' --only-path 'apps/api/session.ts'
   uv run cli/agent_code_reviewer.py --model grok --pr 60
+  uv run cli/agent_code_reviewer.py --pr 60 --dry-run
   uv run cli/agent_code_reviewer.py --reset "Start fresh conversation"
   uv run cli/agent_code_reviewer.py --session abc123 "Scoped to this session"
   uv run cli/agent_code_reviewer.py --ttl 60 "Keep history for 1 hour"
@@ -91,6 +100,9 @@ Exit codes:
      a key that does not exist
   3  --pr diff does not fit the selected model's context window; the message
      names the roster entries that would take it
+  4  a slice run (--only-path / --ignore-path) the whole-diff pass did not
+     earn: no pass yet, PR head moved, no nomination under 150K tokens, or
+     three slices already ran
 """
 
 from __future__ import annotations
@@ -107,6 +119,7 @@ import tomllib
 import urllib.error
 import urllib.request
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -115,6 +128,12 @@ from pathlib import Path
 CONFIG_PATH: Path = Path(__file__).resolve().parent / "agent_reviewer.toml"
 
 DEFAULT_TTL_MINUTES: int = 30
+
+# A model call is retried on 429, 5xx, and timeouts: one backoff per retry,
+# so len(RETRY_BACKOFF_SECONDS) + 1 attempts in all. Anything else (4xx, bad
+# JSON, auth) fails on the first attempt.
+RETRY_BACKOFF_SECONDS: tuple[float, ...] = (2.0, 8.0)
+RETRYABLE_STATUS: frozenset[int] = frozenset({408, 429, 500, 502, 503, 504})
 
 DEFAULT_SYSTEM_PROMPT: str = (
     "You are a staff-level software architect reviewing code and designs. "
@@ -162,6 +181,9 @@ PR_REVIEW_SYSTEM_PROMPT: str = (
     "a race you could not trace to its end)\n\n"
     "Only comment on lines that are ADDED or CHANGED (+ lines in the diff). "
     "Do NOT comment on deleted lines or unchanged context lines. "
+    "When the author asks you to check a named invariant, 'it holds' and 'unsettled from "
+    "what I can see' are complete answers; do not manufacture a finding to justify the pass, "
+    "and do not demand that an invariant hold across concurrent requests unless it says so.\n\n"
     "NEVER put praise in an inline comment — every entry in `comments` must flag something "
     "that needs attention. If a line has nothing wrong with it, emit no comment for it. "
     "Praise belongs only in `summary`, capped at 2 sentences. "
@@ -169,11 +191,20 @@ PR_REVIEW_SYSTEM_PROMPT: str = (
 )
 
 # Diff hunks for these paths are dropped from PR review input. Plans / specs
-# under docs/superpowers are agentic-coding scratch material — committing them
-# is fine for record-keeping, but they're never code-relevant for review and
-# would otherwise waste tokens (and crowd out the real diff).
+# under docs/superpowers are agentic-coding scratch material, and lockfiles are
+# generated: neither is code-relevant for review, and a lockfile alone can be
+# 10K+ tokens that crowd out the real diff.
 DEFAULT_IGNORE_PATHS: list[str] = [
     "docs/superpowers/",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "bun.lockb",
+    "uv.lock",
+    "poetry.lock",
+    "Cargo.lock",
+    "go.sum",
+    "*.snap",
 ]
 
 
@@ -227,7 +258,18 @@ class DiffTooLargeError(Exception):
     """A --pr diff that overflows the selected entry's window. main() exits 3."""
 
 
+class SliceGateError(Exception):
+    """A slice run the whole pass did not earn. main() exits 4."""
+
+
 MAX_FOCUS_AREAS: int = 3
+
+# A slice (a --pr run with --only-path or --ignore-path) is a second read of
+# code the whole pass already covered. The script lets one run only when that
+# pass nominated a focus area or was itself large enough that attention per
+# line was the problem, and never more than MAX_SLICE_RUNS per whole pass.
+SLICE_GATE_TOKENS: int = 150_000
+MAX_SLICE_RUNS: int = 3
 
 
 @dataclass(frozen=True)
@@ -642,10 +684,40 @@ class Adapter(ABC):
     @abstractmethod
     def call_api(self, request_body: dict) -> dict: ...
 
+    def call(self, request_body: dict, sleep: Callable[[float], None] = time.sleep) -> dict:
+        """`call_api` with a bounded retry on transient failures."""
+        for attempt, backoff in enumerate(RETRY_BACKOFF_SECONDS, start=1):
+            try:
+                return self.call_api(request_body)
+            except Exception as exc:
+                if not is_transient(exc):
+                    raise
+                print(
+                    f"--> {type(exc).__name__} from {self.entry.key} "
+                    f"(attempt {attempt}/{len(RETRY_BACKOFF_SECONDS) + 1}); "
+                    f"retrying in {backoff:g}s",
+                    file=sys.stderr,
+                )
+                sleep(backoff)
+        return self.call_api(request_body)
+
     @abstractmethod
     def extract_response(self, data: dict) -> tuple[str, str]:
         """Returns (visible_text, opaque_signature). Signature is access-method
         specific and threaded back into the next turn's history record."""
+
+
+def is_transient(exc: BaseException) -> bool:
+    """429, 5xx, or a timeout, from urllib or from an SDK that exposes
+    `status_code`. Duck-typed so the OpenRouter SDK need not be importable."""
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in RETRYABLE_STATUS
+    if isinstance(exc, (urllib.error.URLError, TimeoutError)):
+        return True
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        return status in RETRYABLE_STATUS
+    return "Timeout" in type(exc).__name__
 
     # Shared history-file ops. The on-disk shape is the same everywhere
     # (entries list + session + per-entry timestamps); only the per-entry
@@ -974,9 +1046,13 @@ def get_pr_diff(pr_number: str) -> str:
 
 
 def _path_matches_any(path: str, patterns: list[str]) -> bool:
-    """True if `path` matches any of `patterns`. Trailing-slash patterns are
-    treated as directory prefixes; everything else as fnmatch globs."""
+    """True if `path` matches any of `patterns`. A pattern equal to the path
+    matches literally first, so route files like `[...slug]/route.ts` need no
+    escaping; trailing-slash patterns are directory prefixes; the rest are
+    fnmatch globs."""
     for pat in patterns:
+        if pat == path:
+            return True
         if pat.endswith("/"):
             if path.startswith(pat):
                 return True
@@ -985,13 +1061,18 @@ def _path_matches_any(path: str, patterns: list[str]) -> bool:
     return False
 
 
-def filter_diff(diff: str, ignore_paths: list[str]) -> tuple[str, list[str]]:
-    """Drop unified-diff blocks whose file paths match any ignore pattern.
+def filter_diff(
+    diff: str, ignore_paths: list[str], only_paths: list[str] | None = None
+) -> tuple[str, list[str]]:
+    """Drop unified-diff blocks whose file paths match any ignore pattern, or,
+    when `only_paths` is given, that match none of its patterns. Patterns use
+    the same syntax in both lists.
 
     Returns the filtered diff plus the list of paths that were dropped (for
     logging — so users can see what got skipped).
     """
-    if not ignore_paths or not diff:
+    only_paths = only_paths or []
+    if not (ignore_paths or only_paths) or not diff:
         return diff, []
     # Split on file boundaries while keeping each `diff --git` header attached
     # to its own block. The first split element is anything before the first
@@ -1008,11 +1089,27 @@ def filter_diff(diff: str, ignore_paths: list[str]) -> tuple[str, list[str]]:
             kept.append(block)  # malformed — keep so we don't silently drop content
             continue
         path_a, path_b = match.group(1), match.group(2)
-        if _path_matches_any(path_a, ignore_paths) or _path_matches_any(path_b, ignore_paths):
+        ignored = _path_matches_any(path_a, ignore_paths) or _path_matches_any(path_b, ignore_paths)
+        selected = not only_paths or (
+            _path_matches_any(path_a, only_paths) or _path_matches_any(path_b, only_paths)
+        )
+        if ignored or not selected:
             dropped.append(path_b)
             continue
         kept.append(block)
     return "".join(kept), dropped
+
+
+def get_repo_slug() -> str:
+    """`owner_repo` for the checkout `gh` resolves, or "" when it cannot."""
+    result = subprocess.run(
+        ["gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip().replace("/", "_")
 
 
 def get_pr_info(pr_number: str) -> dict:
@@ -1150,6 +1247,38 @@ def _build_line_content_index(diff: str) -> dict[str, dict[str, list[int]]]:
     return result
 
 
+def existing_comment_anchors(pr_number: str, attribution: str) -> set[tuple[str, int]]:
+    """(path, line) of every inline comment this attribution tag already left
+    on the PR. Empty on any `gh` failure: posting a duplicate beats losing a
+    review to a lookup error."""
+    result = subprocess.run(
+        [
+            "gh", "api", "--paginate",
+            f"repos/{{owner}}/{{repo}}/pulls/{pr_number}/comments",
+            "--jq", ".[] | [.path, (.line // .original_line // 0), .body] | @json",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print(f"Warning: could not list existing comments: {result.stderr[:200]}", file=sys.stderr)
+        return set()
+    anchors: set[tuple[str, int]] = set()
+    for row in result.stdout.splitlines():
+        try:
+            path, line, body = json.loads(row)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(body, str) and body.startswith(f"**[{attribution}]**") and line:
+            anchors.add((path, int(line)))
+    return anchors
+
+
+def drop_already_posted(comments: list[dict], posted: set[tuple[str, int]]) -> list[dict]:
+    """Comments whose (path, line) this tag has not already commented on."""
+    return [c for c in comments if (c.get("path", ""), c.get("line")) not in posted]
+
+
 def post_pr_review(
     pr_number: str,
     summary: str,
@@ -1182,6 +1311,16 @@ def post_pr_review(
         )
     anchorable = _parse_diff_anchorable_lines(diff) if diff else {}
     content_index = _build_line_content_index(diff) if diff else {}
+
+    if comments:
+        before = len(comments)
+        comments = drop_already_posted(comments, existing_comment_anchors(pr_number, attribution))
+        if len(comments) < before:
+            print(
+                f"--> Skipped {before - len(comments)} comment(s) already posted by "
+                f"[{attribution}] at the same file and line",
+                file=sys.stderr,
+            )
 
     valid_inline: list[dict] = []
     invalid_fallback: list[dict] = []
@@ -1380,16 +1519,84 @@ def format_focus_section(areas: list[FocusArea]) -> str:
     return "\n".join(lines)
 
 
-def write_focus_file(pr_number: str, areas: list[FocusArea], churn: list[tuple[str, int]]) -> Path:
-    """Machine-readable hand-off for the skill, beside the history files."""
-    path = Path(f"/tmp/agent_reviewer_pr{pr_number}_focus.json")
+def focus_file_path(pr_number: str, repo_slug: str) -> Path:
+    """Beside the history files, scoped by repo so PR #68 in two repos cannot collide."""
+    scope = f"{repo_slug}_" if repo_slug else ""
+    return Path(f"/tmp/agent_reviewer_{scope}pr{pr_number}_focus.json")
+
+
+def prune_focus_paths(areas: list[FocusArea], known_paths: set[str]) -> list[FocusArea]:
+    """Drop nominated paths that neither exist in the checkout nor appear in the
+    diff. Reviewers invent plausible directories (`infra/`); a slice built on
+    one would ignore-path its way to an empty diff."""
+    pruned: list[FocusArea] = []
+    for area in areas:
+        paths = [p for p in area.paths if p in known_paths or Path(p).exists()]
+        pruned.append(FocusArea(area.title, area.invariant, paths, area.why))
+    return pruned
+
+
+def write_focus_file(
+    pr_number: str,
+    areas: list[FocusArea],
+    churn: list[tuple[str, int]],
+    repo_slug: str = "",
+    head: str = "",
+    diff_tokens: int = 0,
+) -> Path:
+    """Machine-readable hand-off for the skill, and the slice gate's record of
+    the whole pass: which head it judged, how large it was, and which slices
+    have run since."""
+    path = focus_file_path(pr_number, repo_slug)
     payload = {
+        "repo": repo_slug,
         "pr": pr_number,
+        "head": head,
+        "diff_tokens": diff_tokens,
         "focus_areas": [vars(a) for a in areas],
         "churn": [{"path": p, "lines": n} for p, n in churn],
+        "slices": [],
     }
     path.write_text(json.dumps(payload, indent=2) + "\n")
     return path
+
+
+def slice_gate_reason(focus: dict | None, head: str) -> str | None:
+    """Why a slice may not run against this whole-pass record, or None if it may."""
+    if focus is None:
+        return "no whole-diff pass has run for this PR; run --pr without path filters first"
+    if focus.get("head") and head and focus["head"] != head:
+        return (
+            f"the whole-diff pass judged {focus['head'][:7]} but the PR is now at "
+            f"{head[:7]}; run it again before slicing"
+        )
+    slices = focus.get("slices") or []
+    if len(slices) >= MAX_SLICE_RUNS:
+        return f"{MAX_SLICE_RUNS} slices have already run against this whole pass"
+    if focus.get("focus_areas"):
+        return None
+    tokens = int(focus.get("diff_tokens") or 0)
+    if tokens >= SLICE_GATE_TOKENS:
+        return None
+    return (
+        f"the whole-diff pass (~{tokens:,} tokens, under {SLICE_GATE_TOKENS:,}) nominated "
+        "no focus area, so there is nothing a second read would settle"
+    )
+
+
+def load_focus_file(path: Path) -> dict | None:
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def record_slice(path: Path, focus: dict, description: str) -> None:
+    focus.setdefault("slices", []).append(description)
+    path.write_text(json.dumps(focus, indent=2) + "\n")
 
 
 def build_pr_prompt(
@@ -1418,9 +1625,17 @@ def review_pr(
     roster: Roster,
     extra_instructions: str = "",
     ignore_paths: list[str] | None = None,
+    only_paths: list[str] | None = None,
     context_files: list[tuple[str, str]] | None = None,
+    whole_pass: bool = True,
+    dry_run: bool = False,
 ) -> None:
-    """Full PR review flow: fetch diff → filter ignored paths → size check → review → post."""
+    """Full PR review flow: fetch diff → filter paths → size check → review → post.
+
+    `whole_pass` is False when the caller restricted the diff (a vertical
+    slice). A slice still prints any focus areas it nominates, but does not
+    overwrite the whole pass's focus file, which is the one the skill reads.
+    `dry_run` prints the parsed review as JSON on stdout instead of posting."""
     print(
         f"--> Reviewing PR #{pr_number} with {adapter.entry.name} ({adapter.entry.id})",
         file=sys.stderr,
@@ -1431,10 +1646,10 @@ def review_pr(
         print("PR diff is empty.", file=sys.stderr)
         return
 
-    diff, dropped = filter_diff(diff, ignore_paths or [])
+    diff, dropped = filter_diff(diff, ignore_paths or [], only_paths)
     if dropped:
         print(
-            f"--> Skipped {len(dropped)} file(s) per ignore patterns: "
+            f"--> Skipped {len(dropped)} file(s) per path patterns: "
             + ", ".join(dropped[:5])
             + ("..." if len(dropped) > 5 else ""),
             file=sys.stderr,
@@ -1445,7 +1660,7 @@ def review_pr(
     # comments about content we explicitly meant to skip.
     if not diff.strip():
         print(
-            f"--> Nothing to review: all {len(dropped)} changed file(s) match ignore patterns.",
+            f"--> Nothing to review: all {len(dropped)} changed file(s) excluded by path patterns.",
             file=sys.stderr,
         )
         return
@@ -1458,6 +1673,19 @@ def review_pr(
     pr_info = get_pr_info(pr_number)
     pr_title = pr_info.get("title", "").strip()
     pr_body = pr_info.get("body", "").strip()
+    head = pr_info.get("headRefOid", "")
+    repo_slug = get_repo_slug()
+    focus_path = focus_file_path(pr_number, repo_slug)
+    diff_tokens = len(annotated_diff) // CHARS_PER_TOKEN
+
+    # A slice runs only when the whole pass earned it. Checked before the
+    # size check so a refused slice costs nothing, not even a token estimate.
+    focus: dict | None = None
+    if not whole_pass:
+        focus = load_focus_file(focus_path)
+        reason = slice_gate_reason(focus, head)
+        if reason:
+            raise SliceGateError(f"slice refused: {reason}.")
     context_block = ""
     if pr_title or pr_body:
         context_block = (
@@ -1478,17 +1706,21 @@ def review_pr(
             f"Roster entries that would take it: {', '.join(fits)} (pass --model)."
             if fits
             else "No roster entry takes it whole: split the PR by vertical "
-            "(one invariant's router + workflow + store together) with --ignore-path, "
+            "(one invariant's router + workflow + store together) with --only-path, "
             "never by layer."
         )
+        if whole_pass:
+            # Record the refused whole pass so the slices it sends you to
+            # clear the gate: a diff no roster entry takes is over the size
+            # threshold by definition.
+            write_focus_file(pr_number, [], churn_by_file(diff), repo_slug, head, diff_tokens)
         raise DiffTooLargeError(
-            f"diff is ~{len(annotated_diff) // CHARS_PER_TOKEN:,} tokens after annotation; "
+            f"diff is ~{diff_tokens:,} tokens after annotation; "
             f"{entry.key} ({_compact_count(entry.context_window)} window) has room for "
             f"~{budget // CHARS_PER_TOKEN:,} beside the prompt. {hint}"
         )
     print(
-        f"--> Diff ~{len(annotated_diff) // CHARS_PER_TOKEN:,} tokens of "
-        f"~{budget // CHARS_PER_TOKEN:,} available on {entry.key}",
+        f"--> Diff ~{diff_tokens:,} tokens of ~{budget // CHARS_PER_TOKEN:,} available on {entry.key}",
         file=sys.stderr,
     )
 
@@ -1498,7 +1730,7 @@ def review_pr(
     history: list[dict] = []
     history = adapter.add_message(history, "user", prompt)
     request_body = adapter.build_request(PR_REVIEW_SYSTEM_PROMPT, history)
-    response_data = adapter.call_api(request_body)
+    response_data = adapter.call(request_body)
     text, _ = adapter.extract_response(response_data)
 
     # Parse JSON response
@@ -1513,7 +1745,8 @@ def review_pr(
     except json.JSONDecodeError:
         print("Response not valid JSON, posting as summary:", file=sys.stderr)
         print(text, file=sys.stderr)
-        # Post raw text as review body
+        if dry_run:
+            return
         post_pr_review(pr_number, text, [], attribution=adapter.entry.tag)
         return
 
@@ -1523,11 +1756,28 @@ def review_pr(
 
     print(f"\n{summary}\n", file=sys.stderr)
     print(f"  {len(comments)} inline comment(s)", file=sys.stderr)
-    focus_path = write_focus_file(pr_number, areas, churn_by_file(diff))
-    print(f"  {len(areas)} focus area(s) for vertical slices -> {focus_path}", file=sys.stderr)
+    churn = churn_by_file(diff)
+    areas = prune_focus_paths(areas, {path for path, _ in churn})
+    if whole_pass:
+        write_focus_file(pr_number, areas, churn, repo_slug, head, diff_tokens)
+        print(f"  {len(areas)} focus area(s) for vertical slices -> {focus_path}", file=sys.stderr)
+    else:
+        assert focus is not None  # the gate loaded it
+        only = ", ".join(only_paths or []) or "(none)"
+        record_slice(focus_path, focus, f"only={only}; ignore={len(ignore_paths or [])}; {extra_instructions[:80]}")
+        used = len(focus["slices"])
+        print(
+            f"  slice {used}/{MAX_SLICE_RUNS} recorded; {len(areas)} focus area(s) printed, file kept",
+            file=sys.stderr,
+        )
     for area in areas:
         print(f"    - {area.title}: {', '.join(area.paths)}", file=sys.stderr)
     summary += format_focus_section(areas)
+
+    if dry_run:
+        print(json.dumps({"summary": summary, "comments": comments}, indent=2))
+        print("--> Dry run: nothing posted", file=sys.stderr)
+        return
 
     # Post to GitHub — the model saw the whole filtered diff, so anchors
     # validate against exactly what it reviewed.
@@ -1619,6 +1869,27 @@ def main() -> None:
             "patterns match a directory prefix (e.g. 'docs/'); other patterns "
             "use fnmatch globs (e.g. '*.snap'). Repeatable. Combined with the "
             f"hardcoded defaults: {', '.join(DEFAULT_IGNORE_PATHS)}."
+        ),
+    )
+    parser.add_argument(
+        "--only-path",
+        dest="only_paths",
+        action="append",
+        default=[],
+        metavar="PATTERN",
+        help=(
+            "Review only files matching PATTERN (same syntax as --ignore-path). "
+            "Repeatable. The inverse of --ignore-path, for a vertical slice that "
+            "names its handful of files instead of excluding everything else."
+        ),
+    )
+    parser.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help=(
+            "With --pr, run the review and print it as JSON on stdout instead of "
+            "posting to GitHub. The focus file is still written on a whole pass."
         ),
     )
     parser.add_argument("--session", dest="session", default="", help="Session ID to scope history (e.g. a UUID per conversation)")
@@ -1721,11 +1992,17 @@ def main() -> None:
                 roster,
                 args.message,
                 ignore_paths=ignore_paths,
+                only_paths=args.only_paths,
                 context_files=attached,
+                whole_pass=not (args.ignore_paths or args.only_paths),
+                dry_run=args.dry_run,
             )
         except DiffTooLargeError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             sys.exit(3)
+        except SliceGateError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(4)
         return
 
     # --reset combined with a message: reset first, then proceed to send.
@@ -1781,7 +2058,7 @@ def main() -> None:
 
     # API call
     request_body = adapter.build_request(system_prompt, history)
-    response_data = adapter.call_api(request_body)
+    response_data = adapter.call(request_body)
 
     # Parse response
     text, signature = adapter.extract_response(response_data)
