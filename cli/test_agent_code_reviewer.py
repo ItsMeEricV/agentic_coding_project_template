@@ -26,6 +26,7 @@ from agent_code_reviewer import (  # noqa: E402
     format_catalog,
     format_focus_section,
     format_version_report,
+    is_prerelease,
     load_config,
     make_adapter,
     model_family,
@@ -440,7 +441,7 @@ class ModelFamilyTests(unittest.TestCase):
         self.assertEqual(model_family("openai/gpt-6-astra-pro"), ("openai/gpt-astra-pro", (6,)))
         self.assertEqual(
             model_family("google/gemini-3.1-flash-lite-preview"),
-            ("google/gemini-flash-lite-preview", (3, 1)),
+            ("google/gemini-flash-lite", (3, 1)),
         )
 
     def test_hyphenated_version_run(self):
@@ -454,6 +455,17 @@ class ModelFamilyTests(unittest.TestCase):
 
     def test_variant_suffix_is_part_of_the_family(self):
         self.assertNotEqual(model_family("z-ai/glm-5.3")[0], model_family("z-ai/glm-5.3:free")[0])
+        self.assertNotEqual(
+            model_family("openai/gpt-6-astra")[0], model_family("openai/gpt-6-astra-pro")[0]
+        )
+
+    def test_stage_tokens_are_not_part_of_the_family(self):
+        self.assertEqual(model_family("google/gemini-3.1-pro-preview")[0], "google/gemini-pro")
+        self.assertEqual(model_family("google/gemini-3.1-pro")[0], "google/gemini-pro")
+        self.assertEqual(model_family("v/m-beta")[0], "v/m")
+        self.assertTrue(is_prerelease("google/gemini-3.1-pro-preview"))
+        self.assertFalse(is_prerelease("google/gemini-3.1-pro"))
+        self.assertFalse(is_prerelease("google/gemini-3.1-pro:free"))
 
 
 class CheckVersionsTests(unittest.TestCase):
@@ -546,6 +558,42 @@ class CheckVersionsByDateTests(unittest.TestCase):
         text = format_version_report([self._report("x-ai/grok-4.6")])
         self.assertIn("2026-08-12", text)
         self.assertIn("2026-09-21", text)
+
+    def test_final_release_supersedes_the_pinned_preview(self):
+        catalog = parse_openrouter_catalog(
+            {
+                "data": [
+                    _cat("google/gemini-3.1-pro-preview", created=MAR_2026),
+                    _cat("google/gemini-3.1-pro", created=AUG_2026),
+                    _cat("google/gemini-3.1-pro-preview-customtools", created=APR_2026),
+                ]
+            }
+        )
+        entry = {"key": "g", "name": "G", "access_method": "gemini_api"}
+        entry["id"] = "gemini-3.1-pro-preview"
+        roster = parse_config(_raw([entry], default="g"))
+        report = check_versions(roster, catalog)[0]
+        self.assertEqual(report.newest.id, "google/gemini-3.1-pro")
+
+    def test_a_later_preview_never_supersedes_a_final_release(self):
+        catalog = parse_openrouter_catalog(
+            {
+                "data": [
+                    _cat("google/gemini-3.1-pro", created=MAR_2026),
+                    _cat("google/gemini-3.1-pro-preview", created=SEP_2026),
+                ]
+            }
+        )
+        entry = {"key": "g", "name": "G", "access_method": "openrouter"}
+        entry["id"] = "google/gemini-3.1-pro"
+        roster = parse_config(_raw([entry], default="g"))
+        self.assertIsNone(check_versions(roster, catalog)[0].newest)
+
+    def test_final_beats_preview_at_equal_version_without_dates(self):
+        catalog = parse_openrouter_catalog({"data": [_cat("v/m-2-beta"), _cat("v/m-2")]})
+        entry = {"key": "m", "name": "M", "access_method": "openrouter", "id": "v/m-2-beta"}
+        roster = parse_config(_raw([entry], default="m"))
+        self.assertEqual(check_versions(roster, catalog)[0].newest.id, "v/m-2")
 
     def test_version_tuple_is_the_fallback_without_dates(self):
         catalog = parse_openrouter_catalog({"data": [_cat("v/m-1.2"), _cat("v/m-1.10")]})

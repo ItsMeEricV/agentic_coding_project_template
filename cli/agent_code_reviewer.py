@@ -447,24 +447,38 @@ def _per_million(price: object) -> float:
         return 0.0
 
 
+# Release-stage tokens. They mark where a model is in its life, not which model
+# it is, so they are dropped from the family: `gemini-3.1-pro-preview` and a later
+# `gemini-3.1-pro` are the same family, and the final release counts as newer.
+STAGE_TOKENS: frozenset[str] = frozenset({"preview", "beta", "exp", "experimental"})
+
+
 def model_family(model_id: str) -> tuple[str, tuple[int, ...]]:
     """Split an id into (family, version): `anthropic/claude-opus-5.5` ->
     ("anthropic/claude-opus", (5, 5)). The version is the first numeric token plus
-    any integer tokens right after it (`claude-3-5-sonnet` -> (3, 5)); everything
-    else, suffixes and `:variant` included, is the family, so `-pro`, `-preview`,
-    and `:free` never pass as upgrades of the plain id."""
+    any integer tokens right after it (`claude-3-5-sonnet` -> (3, 5)). Stage tokens
+    (STAGE_TOKENS) are dropped; every other token, suffixes and `:variant`
+    included, is the family, so `-pro`, `-mini`, and `:free` never pass as
+    upgrades of the plain id."""
     vendor, _, rest = model_id.rpartition("/")
     tokens = rest.split("-")
     k = next((i for i, t in enumerate(tokens) if re.fullmatch(r"\d+(\.\d+)*", t)), None)
     if k is None:
-        return model_id, ()
+        name = [t for t in tokens if t not in STAGE_TOKENS]
+        return (f"{vendor}/{'-'.join(name)}" if vendor else "-".join(name)), ()
     version = [int(part) for part in tokens[k].split(".")]
     j = k + 1
     while j < len(tokens) and re.fullmatch(r"\d+", tokens[j]):
         version.append(int(tokens[j]))
         j += 1
-    family = "-".join(tokens[:k] + tokens[j:])
+    name = [t for t in tokens[:k] + tokens[j:] if t not in STAGE_TOKENS]
+    family = "-".join(name)
     return (f"{vendor}/{family}" if vendor else family), tuple(version)
+
+
+def is_prerelease(model_id: str) -> bool:
+    rest = model_id.rpartition("/")[2].split(":", 1)[0]
+    return any(token in STAGE_TOKENS for token in rest.split("-"))
 
 
 @dataclass(frozen=True)
@@ -477,10 +491,16 @@ class VersionReport:
 
 def _is_newer(candidate: CatalogModel, current: CatalogModel) -> bool:
     """Listing date decides: vendors disagree on whether 4.20 follows 4.6 (xAI's
-    does not), so the version tuple is only a fallback when a date is missing."""
+    does not), so the version tuple is only a fallback when a date is missing.
+    A pre-release is never newer than a final release."""
+    if is_prerelease(candidate.id) and not is_prerelease(current.id):
+        return False
     if candidate.created and current.created:
         return candidate.created > current.created
-    return model_family(candidate.id)[1] > model_family(current.id)[1]
+    cand_version, cur_version = model_family(candidate.id)[1], model_family(current.id)[1]
+    if cand_version == cur_version:
+        return is_prerelease(current.id) and not is_prerelease(candidate.id)
+    return cand_version > cur_version
 
 
 def check_versions(roster: Roster, catalog: list[CatalogModel]) -> list[VersionReport]:
