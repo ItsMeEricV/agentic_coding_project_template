@@ -15,12 +15,14 @@ Flag enumeration, env-var setup, and exit codes live in the script's `--help` an
 
 ## Red Flags — STOP
 
-| Rationalization                                          | Reality                                                                                                                                                                                                                                                                                                                                                            |
-| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| "User named a model — invoke this skill"                 | Depends on the verb. If they want that model to **review** code, use this skill. If they want it to **write, fix, or refactor** code, that is delegation, which this skill never does — hand off to whatever delegation skill the harness provides for that model (e.g. `codex:rescue` from the OpenAI Codex plugin), or tell the user no such skill is installed. |
-| "Every PR deserves a second opinion before merge"        | Token cost is real. Reserve second opinions for PRs that touch auth, money, migrations, or new subsystems. Trivial chores don't earn a review.                                                                                                                                                                                                                     |
-| "Reviewer disagreed — apply their fix"                   | Reviewers are wrong constantly. Treat their output as input, not instruction. Push back in-conversation when you have a stronger argument; don't silently capitulate.                                                                                                                                                                                              |
-| "I'll skim the reviewer output and pick what looks good" | Edge-case flags and security/migration concerns deserve a deliberate accept/disagree/defer reply per comment, same as a human reviewer. Cherry-picking trains you to ignore the parts that matter.                                                                                                                                                                 |
+| Rationalization                                               | Reality                                                                                                                                                                                                                                                                                                                                                            |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| "User named a model — invoke this skill"                      | Depends on the verb. If they want that model to **review** code, use this skill. If they want it to **write, fix, or refactor** code, that is delegation, which this skill never does — hand off to whatever delegation skill the harness provides for that model (e.g. `codex:rescue` from the OpenAI Codex plugin), or tell the user no such skill is installed. |
+| "Every PR deserves a second opinion before merge"             | Token cost is real. Reserve second opinions for PRs that touch auth, money, migrations, or new subsystems. Trivial chores don't earn a review.                                                                                                                                                                                                                     |
+| "Reviewer disagreed — apply their fix"                        | Reviewers are wrong constantly. Treat their output as input, not instruction. Push back in-conversation when you have a stronger argument; don't silently capitulate.                                                                                                                                                                                              |
+| "The diff is huge — I'll review it one package at a time"     | Slicing by layer hands the reviewer a router with no workflow, or a workflow with no store, so it flags contracts the other layer enforces. Send it whole first; then add vertical slices chosen from the reviewer's `focus_areas` and `ARCHITECTURE.md`'s invariants — see [Choosing vertical slices](#choosing-vertical-slices).                                 |
+| "The reviewer read the spec literally, but I chose otherwise" | That is not a Disagree. If the reviewer's reading matches the approved text and you deliberately deviated, the user decides — reply **Escalate**, not Disagree.                                                                                                                                                                                                    |
+| "I'll skim the reviewer output and pick what looks good"      | Edge-case flags and security/migration concerns deserve a deliberate accept/disagree/defer reply per comment, same as a human reviewer. Cherry-picking trains you to ignore the parts that matter.                                                                                                                                                                 |
 
 ## When to invoke
 
@@ -46,11 +48,15 @@ Read the roster first (`--list`), then apply judgment. The keys below are the sh
 - **A lite tier** (e.g. `gemini-lite`) only for: diffs under ~200 lines, sanity passes on routine refactors, fast iteration loops where you'll run the reviewer several times. Never for architecture review, security audits, or when the model is the only second pair of eyes.
 - **Reach past the default** when the diff is _small but conceptually load-bearing_ — a lock-free data structure, a security boundary, a non-obvious algorithm. A second, differently-familied opinion on the same diff is cheap insurance there.
 
+- **Check the CONTEXT column for a big PR.** `--list` shows each entry's window. If the script refuses the diff (exit 3), its message names the entries that would take it — pick one of those rather than slicing.
+
 If you're unsure, omit `--model` — the roster's `default` is set to the deep model the project trusts most.
 
 ## Adding a model to the roster
 
 Never edit `cli/agent_reviewer.toml` unless the user asked. Adding an entry commits a model choice to the repo for every future run.
+
+To see whether an existing entry has fallen behind, run `uv run cli/agent_code_reviewer.py --check-versions`: it compares every entry against the public catalog and reports a same-family pinned id that was listed later (`claude-opus-5` → `claude-opus-5.5`), with both listing dates, its window, and price. The listing date decides, not the number: xAI's `grok-4.20` predates `grok-4.6`. Report only. Bump an entry's `id`, `name`, and `context_window` together, and only when the user asks.
 
 When they do ask ("add GPT Astra to the roster"), the only hard part is the provider's exact `id`. **Never guess a slug from a marketing name** — resolve it:
 
@@ -69,6 +75,36 @@ Pick from what it returns:
 
 A model reachable only through a direct provider API (a preview id OpenRouter has not listed) won't appear. Get that id from the provider's own model list and set `access_method` to `gemini_api` or `openai_api` accordingly.
 
+## Sizing and context for `--pr`
+
+A load-bearing PR gets two kinds of pass, and they catch different bugs:
+
+1. **One whole-diff pass, always.** The script sizes the diff to the entry's `context_window` and refuses one that does not fit (exit 3) instead of truncating it; a refusal names the entries that would take it, so switch model rather than split. This pass sees every layer, so it is the one that judges cross-layer contracts correctly.
+2. **Up to three vertical slices on the riskiest areas.** Attention per line drops as the prompt grows, so the races and off-by-one-attempt bugs that four small passes found on a 190K-token PR will not all surface in one. A slice is one invariant's router, workflow, and store together, `--ignore-path` dropping the rest, `--file` attaching the sibling interfaces it still depends on, and the invariant as the question. Never slice **by layer**: a reviewer that sees the router without the workflow that produces its events flags contracts the missing layer enforces, and every such finding is a false positive you then disprove on the PR.
+
+### Choosing vertical slices
+
+Rank candidate areas by how grounded the source is in this diff, merge, dedupe by file overlap, and keep at most three:
+
+1. **Reviewer-nominated.** The whole-diff pass may return `focus_areas`: invariants it could not settle from the diff alone, with the files a focused pass must see together. They are posted under "Suggested focused passes" in the review body and written, with per-file churn, to `/tmp/agent_reviewer_pr<N>_focus.json`. Read that file first. Nominating "the hard part is here" survives a long prompt far better than finding the bug in it, which is why this source ranks first — but it must never be the only one, since the inattention that misses a race can also miss nominating its area.
+2. **Project-declared.** `ARCHITECTURE.md` lists the system's invariants with the paths that enforce them; any invariant whose paths this diff touches is a candidate. `KNOWLEDGE.md`'s flagged ambiguities mark places the team itself is unsure — a touched term there is a candidate too. `AGENTS.md` rules are generic and feed the floor below, not slice selection.
+3. **Diff-derived.** From the focus file's `churn`: the most-changed files, and code changes with no matching test changes. Both are objective and cost nothing.
+4. **Hardcoded floor.** Always check for: shared mutable state, retry and idempotency paths, authorization boundaries, migrations, money. Keep this list short; it exists so an empty nomination list still gets a slice, not to define risk.
+
+Give the reviewer the rationale, not a rule list. A paragraph of "binding rules" in the prompt turns the model into a linter that tags every deliberate deviation HIGH. Attach the design doc or decision log instead, with `--file` (repeatable; it rides along as read-only context the reviewer judges the diff against but does not comment on):
+
+```bash
+uv run cli/agent_code_reviewer.py --pr 67 --file docs/rfcs/0009-session-workflow.md "Focus on cancellation and retry paths"
+```
+
+A slice attaches the sibling layer's interface file the same way, so the contract is in the prompt even though its implementation is not, and names the invariant from the focus area or `ARCHITECTURE.md` as its question:
+
+```bash
+uv run cli/agent_code_reviewer.py --pr 67 --ignore-path 'packages/config-schema/' --ignore-path 'docs/' \
+  --file packages/core/session/session-service.ts --file docs/rfcs/0009-session-workflow.md \
+  "Check one invariant: a cancelled task always ends in abandonStepRun(cancelled), and no sandbox outlives its session."
+```
+
 ## Reading reviewer output
 
 Reviewers will produce a mix of: edge-case flags, style/idiom opinions, performance observations, and (occasionally) architecture rewrites. Weight them like this:
@@ -78,6 +114,7 @@ Reviewers will produce a mix of: edge-case flags, style/idiom opinions, performa
 - **Performance observations**: investigate if they cite a specific hot path or complexity claim; ignore if they're hand-wavy ("this could be faster").
 - **Style / idiom opinions**: advisory only. Apply if the rule matches the project's existing AGENTS.md / style; ignore otherwise.
 - **Architecture rewrites**: never silently accept. Re-ground in the original spec and the question you actually asked. Often the reviewer didn't have the context for the constraint you'd already considered.
+- **Findings about a contract enforced elsewhere** ("stale events can arrive", "cancel skips cleanup"): check whether the enforcing code was in the diff the reviewer saw. If it was not, verify the invariant in that code before replying, cite the file in the reply, and attach it with `--file` on the next run.
 
 ## Praise budget
 
@@ -93,9 +130,11 @@ Reviews exist to surface problems; praise is a rounding error on their value. Th
 
 Reviewers are confident-sounding but often wrong. When a critique is wrong:
 
-- **Respond in-conversation**, don't capitulate. The script persists conversation history — your push-back becomes part of the next turn's context, and the reviewer often refines or retracts.
+- **In conversation mode, respond in-conversation**, don't capitulate. The script persists history — your push-back becomes part of the next turn's context, and the reviewer often refines or retracts.
+- **In `--pr` mode there is no second turn.** Each run is single-shot and the reviewer never sees your replies, so a PR reply is a record for the user and the next maintainer, not an argument the reviewer can retract. Hold it to the same standard: a verifiable claim with a file cited, not an assertion.
 - **State your reasoning concretely** ("the constraint here is X, which makes Y impractical") rather than "I disagree."
 - **Cite the spec** if you have one — reviewers are bad at remembering scope you established earlier.
+- **Separate "wrong" from "overruled."** When the reviewer's reading matches the approved spec and you deliberately deviated, you do not get to disagree; that is the user's call. Reply **Escalate** and name the commits that would revert the deviation.
 - **If they're persistent and you're certain**, log the disagreement (PR comment, `MEMORY.md` entry) and move on. The next maintainer benefits from knowing why a "obvious" suggestion wasn't applied.
 
 When _they're right_, fix the code and reply to the PR comment with `**[CLAUDE]** Agree — fixed in <commit>` (or equivalent attribution).
@@ -109,7 +148,7 @@ When _they're right_, fix the code and reply to the PR comment with `**[CLAUDE]*
 
 ## After you've used the script
 
-- If it ran `--pr <N>` mode, the reviewer's inline comments are already on the PR. Reply to each _actionable_ one with `**[CLAUDE]** agree / disagree / defer + reason`, same protocol as a human reviewer. Leave praise unanswered — see [Praise budget](#praise-budget).
+- If it ran `--pr <N>` mode, the reviewer's inline comments are already on the PR. Reply to each _actionable_ one with `**[CLAUDE]** Agree / Disagree / Defer / Escalate + reason`, same protocol as a human reviewer. **Agree** fixes and names the commit. **Disagree** cites the code or spec that refutes the finding. **Defer** names the ticket or build that will take it. **Escalate** is for a correct reading of the spec that you deliberately deviated from — state the trade-off and the reverting commits, and let the user rule. Leave praise unanswered — see [Praise budget](#praise-budget).
 - If it was a one-off question, summarize the takeaways in your response to the user — don't dump the raw reviewer output unless asked.
 - If the reviewer flagged something that turned out to be a real codebase pattern issue (not just a one-shot bug), consider whether it belongs in `AGENTS.md` as a new rule, or in `MEMORY.md` as a gotcha note.
 
@@ -120,4 +159,5 @@ The script's `--help` covers the full env-var list and setup steps. The two non-
 - **Run it with `uv run`.** The script declares its dependencies in a PEP 723 header, so `uv run cli/agent_code_reviewer.py …` resolves them per-run with no venv to manage. Bare `python3` works for every access method except `openrouter`, whose SDK import will fail.
 - **API keys live in your shell profile or `~/.claude/settings.json`**, one per access method: `GEMINI_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`. `--list` shows which are set. A user missing one sees a clear error naming the var; tell them to set it, do not try to work around it.
 - **Exit code 2 means the roster is wrong** (bad TOML, unknown `--model` key), not that the API failed. Fix the invocation or the config — do not retry.
+- **Exit code 3 means the diff does not fit the model's window.** The message names roster entries that would take it. Switch model; slicing is for risk, not for size — see [Sizing and context](#sizing-and-context-for---pr). Never retry the same entry.
 - **Gemini's free tier rate limits are too low for PR review.** A Tier-1 paid key is the practical minimum. If a user hits rate limits, escalating to paid is the fix, not retry-with-backoff.

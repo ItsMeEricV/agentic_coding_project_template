@@ -18,6 +18,7 @@ new *access method* is the only change that needs Python.
 
   uv run cli/agent_code_reviewer.py --list             # resolved roster + key status
   uv run cli/agent_code_reviewer.py --find-model astra # search for a new model id
+  uv run cli/agent_code_reviewer.py --check-versions   # newer same-family ids per entry
 
 Setup:
   Only the access methods you actually use need a key.
@@ -36,6 +37,19 @@ PR Review Mode (--pr):
 
     uv run cli/agent_code_reviewer.py --pr 60
     uv run cli/agent_code_reviewer.py --model codex --pr 60
+    uv run cli/agent_code_reviewer.py --pr 60 --file docs/rfcs/0009.md
+
+  The whole diff goes in one pass, sized to the entry's `context_window` from
+  the roster. A diff that does not fit is refused (exit 3) with the roster
+  entries that would take it — nothing is silently truncated. `--file` (repeatable)
+  attaches design docs or sibling-layer code as read-only context so the
+  reviewer judges the diff against the real contract, not a guess at it.
+
+  Besides its comments the reviewer may nominate up to three focus areas: an
+  invariant it could not settle from the diff alone, and the files that
+  enforce it. They go in the review body and, with per-file churn, into
+  /tmp/agent_reviewer_pr<N>_focus.json for the skill to turn into vertical
+  slices (`--ignore-path` to the area, `--file` for its sibling interfaces).
 
 Conversation History:
   - One file per roster entry: /tmp/agent_reviewer_<key>.json
@@ -49,6 +63,7 @@ Usage:
   uv run cli/agent_code_reviewer.py "Your question here"
   uv run cli/agent_code_reviewer.py --model codex "Same question via Codex"
   uv run cli/agent_code_reviewer.py --file path/to/file.ts "Review this code"
+  uv run cli/agent_code_reviewer.py --pr 60 --file docs/rfcs/0009.md --file core/session.ts
   uv run cli/agent_code_reviewer.py --pr 60 "Focus on error handling"
   uv run cli/agent_code_reviewer.py --model grok --pr 60
   uv run cli/agent_code_reviewer.py --reset "Start fresh conversation"
@@ -57,6 +72,7 @@ Usage:
   uv run cli/agent_code_reviewer.py --system "You are a security auditor" "Check for XSS"
   uv run cli/agent_code_reviewer.py --list --verbose
   uv run cli/agent_code_reviewer.py --find-model "gpt-6"
+  uv run cli/agent_code_reviewer.py --check-versions
 
   Running under bare `python3` works for every access method except
   `openrouter`, whose SDK import is deferred until that adapter is used.
@@ -73,6 +89,8 @@ Exit codes:
   1  API error, missing API key, or a `gh` operation failed
   2  roster problem: unreadable/invalid agent_reviewer.toml, or --model naming
      a key that does not exist
+  3  --pr diff does not fit the selected model's context window; the message
+     names the roster entries that would take it
 """
 
 from __future__ import annotations
@@ -119,6 +137,10 @@ PR_REVIEW_SYSTEM_PROMPT: str = (
     "pull request title and description written by the PR author. This is the author's framing "
     "of their own change — use it for context (intent, design decisions, scope), but don't trust "
     "it unconditionally. Push back on issues you find even if the description says otherwise.\n\n"
+    "A <context_files>...</context_files> block may follow, holding files the author attached "
+    "for context: design decisions, RFCs, or code from a layer the diff depends on. Read them "
+    "to learn the contracts and deliberate rulings the diff is written against, and judge the "
+    "diff by them. They are not under review: never emit a comment whose path is one of them.\n\n"
     "IMPORTANT: Respond with a JSON object containing:\n"
     '- "summary": A 2-3 sentence overall assessment, which may include at most 2 sentences '
     "of praise if genuinely warranted (praise is optional — omit it entirely when nothing "
@@ -129,7 +151,15 @@ PR_REVIEW_SYSTEM_PROMPT: str = (
     '  - "code_excerpt": A VERBATIM copy of the targeted line\'s code (without the `L<lineno>` '
     "prefix and without the diff marker `+`/space; preserve leading indentation and the rest of "
     "the line exactly). This is used to snap your comment to the right line if `line` is off.\n"
-    '  - "body": The review comment (use markdown). Prefix with severity: 🔴 CRITICAL, 🟠 HIGH, 🟡 MEDIUM, 🔵 LOW\n\n'
+    '  - "body": The review comment (use markdown). Prefix with severity: 🔴 CRITICAL, 🟠 HIGH, 🟡 MEDIUM, 🔵 LOW\n'
+    '- "focus_areas": OPTIONAL, at most 3. Areas where you are UNCERTAIN whether an invariant '
+    "holds and a focused second pass, with the code that enforces it attached, would settle "
+    "it. Not places you already commented on, and not a restatement of your comments. Each has:\n"
+    '  - "title": a short name for the area\n'
+    '  - "invariant": the property to check, stated so a reviewer could test it\n'
+    '  - "paths": files in or beside this diff a focused pass must see together\n'
+    '  - "why": what in this diff left it unsettled (a producer or enforcer you could not see, '
+    "a race you could not trace to its end)\n\n"
     "Only comment on lines that are ADDED or CHANGED (+ lines in the diff). "
     "Do NOT comment on deleted lines or unchanged context lines. "
     "NEVER put praise in an inline comment — every entry in `comments` must flag something "
@@ -160,7 +190,20 @@ DEFAULT_IGNORE_PATHS: list[str] = [
 ACCESS_METHODS: tuple[str, ...] = ("openrouter", "gemini_api", "openai_api")
 
 REQUIRED_FIELDS: tuple[str, ...] = ("key", "name", "access_method", "id")
-OPTIONAL_FIELDS: tuple[str, ...] = ("tag", "store")
+OPTIONAL_FIELDS: tuple[str, ...] = ("tag", "store", "context_window")
+
+# Window assumed for a roster entry that declares none. Deliberately small: a
+# too-generous guess truncates nothing but overflows the model, which fails
+# late and expensively. Declare the real figure (`--find-model` prints it).
+DEFAULT_CONTEXT_WINDOW: int = 128_000
+
+# Rough chars-per-token for code and diffs, used to turn a token window into a
+# character budget without a tokenizer dependency.
+CHARS_PER_TOKEN: int = 4
+
+# Tokens held back from the window for the model's JSON reply: a long diff can
+# draw dozens of comments, each with a verbatim code excerpt.
+REPLY_RESERVE_TOKENS: int = 32_000
 
 
 class ConfigError(Exception):
@@ -177,6 +220,24 @@ class ModelEntry:
     id: str
     tag: str
     store: bool = False
+    context_window: int = DEFAULT_CONTEXT_WINDOW
+
+
+class DiffTooLargeError(Exception):
+    """A --pr diff that overflows the selected entry's window. main() exits 3."""
+
+
+MAX_FOCUS_AREAS: int = 3
+
+
+@dataclass(frozen=True)
+class FocusArea:
+    """An invariant the whole-diff pass could not settle; a candidate vertical slice."""
+
+    title: str
+    invariant: str
+    paths: list[str]
+    why: str
 
 
 @dataclass(frozen=True)
@@ -252,6 +313,14 @@ def parse_config(raw: dict) -> Roster:
                 f"(this one is {access_method})"
             )
 
+        context_window = model.get("context_window", DEFAULT_CONTEXT_WINDOW)
+        if (
+            isinstance(context_window, bool)
+            or not isinstance(context_window, int)
+            or context_window <= 0
+        ):
+            raise ConfigError(f"{where}: `context_window` must be a positive integer (tokens)")
+
         entries.append(
             ModelEntry(
                 key=key,
@@ -260,6 +329,7 @@ def parse_config(raw: dict) -> Roster:
                 id=model["id"],
                 tag=tag,
                 store=store,
+                context_window=context_window,
             )
         )
 
@@ -290,6 +360,7 @@ def format_roster(roster: Roster, verbose: bool = False) -> str:
             f"{entry.key}{marker}",
             entry.access_method,
             entry.id,
+            _compact_count(entry.context_window),
             "set" if adapter.api_key() else f"MISSING {adapter.api_key_env_var()}",
         ]
         if verbose:
@@ -297,7 +368,7 @@ def format_roster(roster: Roster, verbose: bool = False) -> str:
             row.append(f"[{entry.tag}]")
         rows.append(row)
 
-    headers = ["KEY", "ACCESS", "ID", "API KEY"]
+    headers = ["KEY", "ACCESS", "ID", "CONTEXT", "API KEY"]
     if verbose:
         headers.insert(1, "NAME")
         headers.append("TAG")
@@ -335,6 +406,7 @@ class CatalogModel:
     completion_price: float
     alias_target: str  # "" unless this id is a floating alias
     is_batch: bool
+    created: int = 0  # unix seconds the catalog listed it; 0 when unknown
 
     @property
     def sort_key(self) -> tuple[int, int, str]:
@@ -361,6 +433,7 @@ def parse_openrouter_catalog(payload: dict) -> list[CatalogModel]:
                 completion_price=_per_million(pricing.get("completion")),
                 alias_target=((raw.get("alias_target") or {}).get("slug") or ""),
                 is_batch=model_id.endswith(":batch"),
+                created=int(raw.get("created") or 0),
             )
         )
     return models
@@ -372,6 +445,124 @@ def _per_million(price: object) -> float:
         return float(price) * 1_000_000  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return 0.0
+
+
+# Release-stage tokens. They mark where a model is in its life, not which model
+# it is, so they are dropped from the family: `gemini-3.1-pro-preview` and a later
+# `gemini-3.1-pro` are the same family, and the final release counts as newer.
+STAGE_TOKENS: frozenset[str] = frozenset({"preview", "beta", "exp", "experimental"})
+
+
+def model_family(model_id: str) -> tuple[str, tuple[int, ...]]:
+    """Split an id into (family, version): `anthropic/claude-opus-5.5` ->
+    ("anthropic/claude-opus", (5, 5)). The version is the first numeric token plus
+    any integer tokens right after it (`claude-3-5-sonnet` -> (3, 5)). Stage tokens
+    (STAGE_TOKENS) are dropped; every other token, suffixes and `:variant`
+    included, is the family, so `-pro`, `-mini`, and `:free` never pass as
+    upgrades of the plain id."""
+    vendor, _, rest = model_id.rpartition("/")
+    tokens = rest.split("-")
+    k = next((i for i, t in enumerate(tokens) if re.fullmatch(r"\d+(\.\d+)*", t)), None)
+    if k is None:
+        name = [t for t in tokens if t not in STAGE_TOKENS]
+        return (f"{vendor}/{'-'.join(name)}" if vendor else "-".join(name)), ()
+    version = [int(part) for part in tokens[k].split(".")]
+    j = k + 1
+    while j < len(tokens) and re.fullmatch(r"\d+", tokens[j]):
+        version.append(int(tokens[j]))
+        j += 1
+    name = [t for t in tokens[:k] + tokens[j:] if t not in STAGE_TOKENS]
+    family = "-".join(name)
+    return (f"{vendor}/{family}" if vendor else family), tuple(version)
+
+
+def is_prerelease(model_id: str) -> bool:
+    rest = model_id.rpartition("/")[2].split(":", 1)[0]
+    return any(token in STAGE_TOKENS for token in rest.split("-"))
+
+
+@dataclass(frozen=True)
+class VersionReport:
+    entry: ModelEntry
+    in_catalog: bool
+    current: CatalogModel | None  # the catalog row the entry resolved to
+    newest: CatalogModel | None  # a newer pinned id in the same family, else None
+
+
+def _is_newer(candidate: CatalogModel, current: CatalogModel) -> bool:
+    """Listing date decides: vendors disagree on whether 4.20 follows 4.6 (xAI's
+    does not), so the version tuple is only a fallback when a date is missing.
+    A pre-release is never newer than a final release."""
+    if is_prerelease(candidate.id) and not is_prerelease(current.id):
+        return False
+    if candidate.created and current.created:
+        return candidate.created > current.created
+    cand_version, cur_version = model_family(candidate.id)[1], model_family(current.id)[1]
+    if cand_version == cur_version:
+        return is_prerelease(current.id) and not is_prerelease(candidate.id)
+    return cand_version > cur_version
+
+
+def check_versions(roster: Roster, catalog: list[CatalogModel]) -> list[VersionReport]:
+    """For each roster entry, the newest same-family pinned catalog id, if newer.
+
+    Direct-API ids (`gemini-3.1-pro-preview`) match the catalog entry whose id
+    ends with `/<id>`. Aliases and batch variants are never offered as upgrades."""
+    pinned = [m for m in catalog if not m.alias_target and not m.is_batch]
+    reports: list[VersionReport] = []
+    for entry in roster.entries:
+        current = next(
+            (m for m in pinned if m.id == entry.id or m.id.endswith("/" + entry.id)), None
+        )
+        if current is None:
+            reports.append(VersionReport(entry, in_catalog=False, current=None, newest=None))
+            continue
+        family = model_family(current.id)[0]
+        newer = [
+            m
+            for m in pinned
+            if m.id != current.id and model_family(m.id)[0] == family and _is_newer(m, current)
+        ]
+        newest = max(newer, key=lambda m: (m.created, model_family(m.id)[1]), default=None)
+        reports.append(VersionReport(entry, in_catalog=True, current=current, newest=newest))
+    return reports
+
+
+def _listed(model: CatalogModel | None) -> str:
+    if model is None or not model.created:
+        return ""
+    return time.strftime("%Y-%m-%d", time.gmtime(model.created))
+
+
+def format_version_report(reports: list[VersionReport]) -> str:
+    rows = []
+    for r in reports:
+        newest, context, price = "", "", ""
+        if not r.in_catalog:
+            status = "not in catalog"
+        elif r.newest is None:
+            status = "up to date"
+        else:
+            status = "newer"
+            newest = r.newest.id
+            context = _compact_count(r.newest.context_length)
+            price = f"${r.newest.prompt_price:g}/${r.newest.completion_price:g}"
+        rows.append(
+            [
+                r.entry.key,
+                r.entry.id,
+                _listed(r.current),
+                status,
+                newest,
+                _listed(r.newest),
+                context,
+                price,
+            ]
+        )
+    headers = [
+        "KEY", "CURRENT ID", "LISTED", "STATUS", "NEWEST ID", "LISTED", "CONTEXT", "$IN/$OUT per M"
+    ]
+    return _render_table(headers, rows)
 
 
 def filter_catalog(models: list[CatalogModel], query: str) -> list[CatalogModel]:
@@ -975,7 +1166,7 @@ def post_pr_review(
     PR diff get bucketed into the review body's "Additional comments"
     section instead of being submitted as inline (which would 422). The
     `diff` argument is the unified diff used to compute anchor eligibility;
-    pass the full pre-truncation diff so anchor validation matches what
+    pass the full filtered diff so anchor validation matches what
     GitHub sees, not what the model saw."""
     pr_info = get_pr_info(pr_number)
     commit_id = pr_info.get("headRefOid", "")
@@ -1117,13 +1308,119 @@ def post_pr_review(
         )
 
 
+def diff_char_budget(context_window: int, overhead_chars: int) -> int:
+    """Characters of annotated diff that fit beside `overhead_chars` of prompt
+    (system prompt, PR description, attached files) with the reply reserve held back."""
+    return max(0, (context_window - REPLY_RESERVE_TOKENS) * CHARS_PER_TOKEN - overhead_chars)
+
+
+def entries_that_fit(roster: Roster, needed_chars: int, overhead_chars: int) -> list[ModelEntry]:
+    """Roster entries, in roster order, whose window takes `needed_chars` of diff."""
+    return [
+        e
+        for e in roster.entries
+        if diff_char_budget(e.context_window, overhead_chars) >= needed_chars
+    ]
+
+
+def churn_by_file(diff: str) -> list[tuple[str, int]]:
+    """Added plus removed lines per file, most churned first. File headers do not count."""
+    counts: dict[str, int] = {}
+    current: str | None = None
+    for line in diff.splitlines():
+        match = re.match(r"diff --git a/(\S+) b/(\S+)", line)
+        if match:
+            current = match.group(2)
+            counts.setdefault(current, 0)
+            continue
+        if current is None or line.startswith(("+++", "---")):
+            continue
+        if line.startswith(("+", "-")):
+            counts[current] += 1
+    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+
+
+def parse_focus_areas(review: dict) -> list[FocusArea]:
+    """The reviewer's `focus_areas`, malformed entries dropped, capped at MAX_FOCUS_AREAS."""
+    raw = review.get("focus_areas")
+    if not isinstance(raw, list):
+        return []
+    areas: list[FocusArea] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        title, invariant, why = (item.get(k) for k in ("title", "invariant", "why"))
+        paths = item.get("paths")
+        if not all(isinstance(v, str) and v for v in (title, invariant)):
+            continue
+        if not isinstance(paths, list):
+            continue
+        areas.append(
+            FocusArea(
+                title=title,
+                invariant=invariant,
+                paths=[p for p in paths if isinstance(p, str) and p],
+                why=why if isinstance(why, str) else "",
+            )
+        )
+        if len(areas) == MAX_FOCUS_AREAS:
+            break
+    return areas
+
+
+def format_focus_section(areas: list[FocusArea]) -> str:
+    """Markdown for the review body: what a focused pass should check, and where."""
+    if not areas:
+        return ""
+    lines = ["", "### Suggested focused passes", ""]
+    for area in areas:
+        paths = ", ".join(f"`{p}`" for p in area.paths) or "_no paths named_"
+        why = area.why.rstrip(".") + ". " if area.why else ""
+        lines.append(f"- **{area.title}** — {area.invariant.rstrip('.')}. {why}Files: {paths}")
+    return "\n".join(lines)
+
+
+def write_focus_file(pr_number: str, areas: list[FocusArea], churn: list[tuple[str, int]]) -> Path:
+    """Machine-readable hand-off for the skill, beside the history files."""
+    path = Path(f"/tmp/agent_reviewer_pr{pr_number}_focus.json")
+    payload = {
+        "pr": pr_number,
+        "focus_areas": [vars(a) for a in areas],
+        "churn": [{"path": p, "lines": n} for p, n in churn],
+    }
+    path.write_text(json.dumps(payload, indent=2) + "\n")
+    return path
+
+
+def build_pr_prompt(
+    annotated_diff: str,
+    context_block: str,
+    extra_instructions: str,
+    context_files: list[tuple[str, str]],
+) -> str:
+    """User turn for --pr: instructions, PR description, attached files, then the diff."""
+    files_block = ""
+    if context_files:
+        files_block = (
+            "<context_files>\n"
+            + "".join(f'<file path="{path}">\n{body}\n</file>\n' for path, body in context_files)
+            + "</context_files>\n\n"
+        )
+    prompt = f"{context_block}{files_block}Review this PR diff:\n\n```diff\n{annotated_diff}\n```"
+    if extra_instructions:
+        prompt = f"{extra_instructions}\n\n{prompt}"
+    return prompt
+
+
 def review_pr(
     pr_number: str,
     adapter: Adapter,
+    roster: Roster,
     extra_instructions: str = "",
     ignore_paths: list[str] | None = None,
+    context_files: list[tuple[str, str]] | None = None,
 ) -> None:
-    """Full PR review flow: fetch diff → filter ignored paths → review → post."""
+    """Full PR review flow: fetch diff → filter ignored paths → size check → review → post."""
     print(
         f"--> Reviewing PR #{pr_number} with {adapter.entry.name} ({adapter.entry.id})",
         file=sys.stderr,
@@ -1153,16 +1450,6 @@ def review_pr(
         )
         return
 
-    # Capture full filtered diff for anchor validation before truncation —
-    # GitHub validates against the real diff, not what we sent the model.
-    full_diff_for_anchors = diff
-
-    # Truncate very large diffs to stay within token limits
-    max_diff_chars = 100_000  # ~25K tokens
-    if len(diff) > max_diff_chars:
-        diff = diff[:max_diff_chars] + "\n\n... [diff truncated] ..."
-        print(f"--> Diff truncated to {max_diff_chars} chars", file=sys.stderr)
-
     annotated_diff = annotate_diff_with_line_numbers(diff)
 
     # Give the reviewer the author's framing (intent, scope, design choices)
@@ -1180,9 +1467,32 @@ def review_pr(
             "</pr_description>\n\n"
         )
 
-    prompt = f"{context_block}Review this PR diff:\n\n```diff\n{annotated_diff}\n```"
-    if extra_instructions:
-        prompt = f"{extra_instructions}\n\n{prompt}"
+    # Everything in the prompt that is not the diff competes with it for the window.
+    overhead = len(build_pr_prompt("", context_block, extra_instructions, context_files or []))
+    overhead += len(PR_REVIEW_SYSTEM_PROMPT)
+    entry = adapter.entry
+    budget = diff_char_budget(entry.context_window, overhead)
+    if len(annotated_diff) > budget:
+        fits = [e.key for e in entries_that_fit(roster, len(annotated_diff), overhead)]
+        hint = (
+            f"Roster entries that would take it: {', '.join(fits)} (pass --model)."
+            if fits
+            else "No roster entry takes it whole: split the PR by vertical "
+            "(one invariant's router + workflow + store together) with --ignore-path, "
+            "never by layer."
+        )
+        raise DiffTooLargeError(
+            f"diff is ~{len(annotated_diff) // CHARS_PER_TOKEN:,} tokens after annotation; "
+            f"{entry.key} ({_compact_count(entry.context_window)} window) has room for "
+            f"~{budget // CHARS_PER_TOKEN:,} beside the prompt. {hint}"
+        )
+    print(
+        f"--> Diff ~{len(annotated_diff) // CHARS_PER_TOKEN:,} tokens of "
+        f"~{budget // CHARS_PER_TOKEN:,} available on {entry.key}",
+        file=sys.stderr,
+    )
+
+    prompt = build_pr_prompt(annotated_diff, context_block, extra_instructions, context_files or [])
 
     # Single-turn review — no persisted history.
     history: list[dict] = []
@@ -1209,18 +1519,24 @@ def review_pr(
 
     summary = review.get("summary", "No summary provided.")
     comments = review.get("comments", [])
+    areas = parse_focus_areas(review)
 
     print(f"\n{summary}\n", file=sys.stderr)
     print(f"  {len(comments)} inline comment(s)", file=sys.stderr)
+    focus_path = write_focus_file(pr_number, areas, churn_by_file(diff))
+    print(f"  {len(areas)} focus area(s) for vertical slices -> {focus_path}", file=sys.stderr)
+    for area in areas:
+        print(f"    - {area.title}: {', '.join(area.paths)}", file=sys.stderr)
+    summary += format_focus_section(areas)
 
-    # Post to GitHub — pass full pre-truncation diff so anchor validation
-    # matches what GitHub sees, not what the model saw.
+    # Post to GitHub — the model saw the whole filtered diff, so anchors
+    # validate against exactly what it reviewed.
     post_pr_review(
         pr_number,
         summary,
         comments,
         attribution=adapter.entry.tag,
-        diff=full_diff_for_anchors,
+        diff=diff,
     )
     print(f"--> Review posted to PR #{pr_number}", file=sys.stderr)
 
@@ -1265,7 +1581,29 @@ def main() -> None:
             "a roster entry needs. Needs no API key. Exit 1 if nothing matches."
         ),
     )
-    parser.add_argument("--file", dest="file_path", default="", help="Attach file content")
+    parser.add_argument(
+        "--check-versions",
+        dest="check_versions",
+        action="store_true",
+        help=(
+            "Compare every roster entry against OpenRouter's public catalog and report "
+            "same-family ids listed later (e.g. claude-opus-5 -> claude-opus-5.5). The "
+            "listing date decides, not version arithmetic. Report only; the roster is "
+            "never edited. Needs no API key."
+        ),
+    )
+    parser.add_argument(
+        "--file",
+        dest="file_paths",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help=(
+            "Attach a file's content. Repeatable. With --pr it rides along as read-only "
+            "context (an RFC, a decision log, code from a layer the diff depends on) "
+            "that the reviewer judges the diff against but does not comment on."
+        ),
+    )
     parser.add_argument(
         "--system", dest="system_prompt", default="", help="Override system prompt"
     )
@@ -1317,6 +1655,14 @@ def main() -> None:
         if args.list:
             print(format_roster(roster, verbose=args.verbose))
             return
+        if args.check_versions:
+            try:
+                catalog = parse_openrouter_catalog(fetch_openrouter_catalog())
+            except (urllib.error.URLError, json.JSONDecodeError, OSError) as exc:
+                print(f"Error: could not fetch {OPENROUTER_CATALOG_URL}: {exc}", file=sys.stderr)
+                sys.exit(1)
+            print(format_version_report(check_versions(roster, catalog)))
+            return
         entry = roster.get(args.model_key) if args.model_key else roster.default_entry()
     except ConfigError as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -1357,10 +1703,29 @@ def main() -> None:
         )
         sys.exit(1)
 
+    attached: list[tuple[str, str]] = []
+    for file_path in args.file_paths:
+        path = Path(file_path)
+        if not path.is_file():
+            print(f"Error: File not found: {file_path}", file=sys.stderr)
+            sys.exit(1)
+        attached.append((file_path, path.read_text()))
+
     # PR review mode
     if args.pr_number:
         ignore_paths = list(DEFAULT_IGNORE_PATHS) + args.ignore_paths
-        review_pr(args.pr_number, adapter, args.message, ignore_paths=ignore_paths)
+        try:
+            review_pr(
+                args.pr_number,
+                adapter,
+                roster,
+                args.message,
+                ignore_paths=ignore_paths,
+                context_files=attached,
+            )
+        except DiffTooLargeError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(3)
         return
 
     # --reset combined with a message: reset first, then proceed to send.
@@ -1371,21 +1736,12 @@ def main() -> None:
         parser.print_help()
         sys.exit(1)
 
-    # Load file content
-    file_content = ""
-    if args.file_path:
-        path = Path(args.file_path)
-        if not path.is_file():
-            print(f"Error: File not found: {args.file_path}", file=sys.stderr)
-            sys.exit(1)
-        file_content = path.read_text()
-
     print(f"--> Model: {entry.name} ({entry.id})", file=sys.stderr)
 
     # Build full message
     full_message = message
-    if file_content:
-        full_message = f"{message}\n\n```\n{file_content}\n```"
+    for _, file_content in attached:
+        full_message += f"\n\n```\n{file_content}\n```"
 
     # Token estimate for large context warning
     token_est = len(full_message) // 4

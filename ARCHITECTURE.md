@@ -47,6 +47,14 @@ graph TD
 Describe how services interact.
 - **Example:** "The Mobile app consumes the same GraphQL endpoint as the Web app. No direct DB access for clients."
 
+## Invariants
+
+The properties that must hold across layers, each with the code that enforces it. A PR that touches any listed path is a candidate for a focused review slice (the `agent-code-reviewer` skill reads this table when choosing them). State each so a reviewer could test it; name the enforcing files, not the whole package.
+
+| Invariant | Enforced in | Why it is load-bearing |
+| --- | --- | --- |
+| _Example:_ a session that ends leaves no step-run pending | `packages/core/session/session-service.ts` (`endSession`), `apps/dispatcher-core/src/workflows/session-workflow.ts` (`finish`) | a pending row after end would hold a token and a sandbox nothing will ever release |
+
 ## Production Deployment Checklist
 
 _Purpose: Ensure nothing is missed when deploying to production. Add this section once your architecture is defined._

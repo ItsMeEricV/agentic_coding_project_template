@@ -22,6 +22,10 @@ default = "codex-sol"
 #   id             model identifier sent to that API.
 #   tag            OPTIONAL. Attribution tag on inline PR comments, per
 #                  AGENTS.md. Defaults to key.upper().
+#   context_window OPTIONAL, tokens, default 128K. Sizes a --pr diff: one that
+#                  does not fit is refused with the entries that would take it.
+#                  Copy the figure `--find-model` prints; a guess that is too
+#                  high overflows the model instead of failing early.
 #   store          OPTIONAL, openai_api only, default false. Makes OpenAI retain
 #                  every payload server-side (private --pr diffs included) in
 #                  exchange for not re-sending the transcript each turn; only
@@ -37,6 +41,7 @@ key = "codex-astra"
 name = "Codex GPT-6 Astra — OpenRouter"
 access_method = "openrouter"
 id = "openai/gpt-6-astra"
+context_window = 1_050_000
 tag = "CODEX"
 
 [[models]]
@@ -44,6 +49,7 @@ key = "codex-sol"
 name = "Codex GPT-6.1 Sol — OpenRouter"
 access_method = "openrouter"
 id = "openai/gpt-6.1-sol"
+context_window = 1_050_000
 tag = "CODEX"
 
 [[models]]
@@ -51,6 +57,7 @@ key = "gemini-pro"
 name = "Gemini 3.1 Pro — Google API"
 access_method = "gemini_api"
 id = "gemini-3.1-pro-preview"
+context_window = 1_050_000
 tag = "GEMINI"
 
 # Same family as the agent that usually writes the code in this repo, so it is
@@ -58,37 +65,42 @@ tag = "GEMINI"
 # different family unless you specifically want Claude's read.
 [[models]]
 key = "opus"
-name = "Claude Opus 5 — OpenRouter"
+name = "Claude Opus 5.5 — OpenRouter"
 access_method = "openrouter"
-id = "anthropic/claude-opus-5"
+id = "anthropic/claude-opus-5.5"
+context_window = 1_000_000
 # Not "CLAUDE": AGENTS.md reserves **[CLAUDE]** for the authoring agent's own
 # PR comments, and a reviewer posting under it would be indistinguishable.
 tag = "OPUS"
 
 [[models]]
 key = "grok"
-name = "Grok 4.6 — OpenRouter"
+name = "Grok 4.7 — OpenRouter"
 access_method = "openrouter"
-id = "x-ai/grok-4.6"
+id = "x-ai/grok-4.7"
+context_window = 500_000
 
 [[models]]
 key = "glm"
 name = "GLM 5.3 — OpenRouter"
 access_method = "openrouter"
 id = "z-ai/glm-5.3"
+context_window = 1_050_000
 
 # Cheap tier — sanity passes on small diffs, not architecture or security review.
 [[models]]
 key = "gemini-lite"
-name = "Gemini 3.1 Flash Lite — Google API"
+name = "Gemini 3.5 Flash Lite — Google API"
 access_method = "gemini_api"
-id = "gemini-3.1-flash-lite-preview"
+id = "gemini-3.5-flash-lite"
+context_window = 1_050_000
 tag = "GEMINI"
 
 # Cheapest entry in the roster. Same-family caveat as `opus` applies.
 [[models]]
 key = "haiku"
-name = "Claude Haiku 4.5 — OpenRouter"
+name = "Claude Haiku 5.5 — OpenRouter"
 access_method = "openrouter"
-id = "anthropic/claude-haiku-4.5"
+id = "anthropic/claude-haiku-5.5"
+context_window = 1_000_000
 tag = "HAIKU"
