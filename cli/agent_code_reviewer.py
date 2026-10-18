@@ -406,6 +406,7 @@ class CatalogModel:
     completion_price: float
     alias_target: str  # "" unless this id is a floating alias
     is_batch: bool
+    created: int = 0  # unix seconds the catalog listed it; 0 when unknown
 
     @property
     def sort_key(self) -> tuple[int, int, str]:
@@ -432,6 +433,7 @@ def parse_openrouter_catalog(payload: dict) -> list[CatalogModel]:
                 completion_price=_per_million(pricing.get("completion")),
                 alias_target=((raw.get("alias_target") or {}).get("slug") or ""),
                 is_batch=model_id.endswith(":batch"),
+                created=int(raw.get("created") or 0),
             )
         )
     return models
@@ -469,7 +471,16 @@ def model_family(model_id: str) -> tuple[str, tuple[int, ...]]:
 class VersionReport:
     entry: ModelEntry
     in_catalog: bool
+    current: CatalogModel | None  # the catalog row the entry resolved to
     newest: CatalogModel | None  # a newer pinned id in the same family, else None
+
+
+def _is_newer(candidate: CatalogModel, current: CatalogModel) -> bool:
+    """Listing date decides: vendors disagree on whether 4.20 follows 4.6 (xAI's
+    does not), so the version tuple is only a fallback when a date is missing."""
+    if candidate.created and current.created:
+        return candidate.created > current.created
+    return model_family(candidate.id)[1] > model_family(current.id)[1]
 
 
 def check_versions(roster: Roster, catalog: list[CatalogModel]) -> list[VersionReport]:
@@ -480,37 +491,57 @@ def check_versions(roster: Roster, catalog: list[CatalogModel]) -> list[VersionR
     pinned = [m for m in catalog if not m.alias_target and not m.is_batch]
     reports: list[VersionReport] = []
     for entry in roster.entries:
-        match = next(
+        current = next(
             (m for m in pinned if m.id == entry.id or m.id.endswith("/" + entry.id)), None
         )
-        if match is None:
-            reports.append(VersionReport(entry, in_catalog=False, newest=None))
+        if current is None:
+            reports.append(VersionReport(entry, in_catalog=False, current=None, newest=None))
             continue
-        family, version = model_family(match.id)
+        family = model_family(current.id)[0]
         newer = [
             m
             for m in pinned
-            if model_family(m.id)[0] == family and model_family(m.id)[1] > version
+            if m.id != current.id and model_family(m.id)[0] == family and _is_newer(m, current)
         ]
-        newest = max(newer, key=lambda m: model_family(m.id)[1], default=None)
-        reports.append(VersionReport(entry, in_catalog=True, newest=newest))
+        newest = max(newer, key=lambda m: (m.created, model_family(m.id)[1]), default=None)
+        reports.append(VersionReport(entry, in_catalog=True, current=current, newest=newest))
     return reports
+
+
+def _listed(model: CatalogModel | None) -> str:
+    if model is None or not model.created:
+        return ""
+    return time.strftime("%Y-%m-%d", time.gmtime(model.created))
 
 
 def format_version_report(reports: list[VersionReport]) -> str:
     rows = []
     for r in reports:
+        newest, context, price = "", "", ""
         if not r.in_catalog:
-            status, newest, context, price = "not in catalog", "", "", ""
+            status = "not in catalog"
         elif r.newest is None:
-            status, newest, context, price = "up to date", "", "", ""
+            status = "up to date"
         else:
             status = "newer"
             newest = r.newest.id
             context = _compact_count(r.newest.context_length)
             price = f"${r.newest.prompt_price:g}/${r.newest.completion_price:g}"
-        rows.append([r.entry.key, r.entry.id, status, newest, context, price])
-    headers = ["KEY", "CURRENT ID", "STATUS", "NEWEST ID", "CONTEXT", "$IN/$OUT per M"]
+        rows.append(
+            [
+                r.entry.key,
+                r.entry.id,
+                _listed(r.current),
+                status,
+                newest,
+                _listed(r.newest),
+                context,
+                price,
+            ]
+        )
+    headers = [
+        "KEY", "CURRENT ID", "LISTED", "STATUS", "NEWEST ID", "LISTED", "CONTEXT", "$IN/$OUT per M"
+    ]
     return _render_table(headers, rows)
 
 
@@ -1536,8 +1567,9 @@ def main() -> None:
         action="store_true",
         help=(
             "Compare every roster entry against OpenRouter's public catalog and report "
-            "newer same-family ids (e.g. claude-opus-5 -> claude-opus-5.5). Report only; "
-            "the roster is never edited. Needs no API key."
+            "same-family ids listed later (e.g. claude-opus-5 -> claude-opus-5.5). The "
+            "listing date decides, not version arithmetic. Report only; the roster is "
+            "never edited. Needs no API key."
         ),
     )
     parser.add_argument(

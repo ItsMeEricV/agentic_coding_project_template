@@ -413,14 +413,21 @@ class FocusSectionTests(unittest.TestCase):
         self.assertIn("`apps/dispatcher-core/src/workflows/session-workflow.ts`", section)
 
 
-def _cat(id, context=1_000_000, alias="", prompt="0.000005"):
+def _cat(id, context=1_000_000, alias="", prompt="0.000005", created=0):
     return {
         "id": id,
         "name": id,
         "context_length": context,
         "pricing": {"prompt": prompt, "completion": "0.00002"},
         **({"alias_target": {"slug": alias}} if alias else {}),
+        **({"created": created} if created else {}),
     }
+
+
+MAR_2026 = 1_774_915_200
+APR_2026 = 1_777_507_200
+AUG_2026 = 1_786_492_800
+SEP_2026 = 1_789_948_800
 
 
 class ModelFamilyTests(unittest.TestCase):
@@ -509,6 +516,42 @@ class CheckVersionsTests(unittest.TestCase):
         self.assertIn("up to date", text)
         self.assertIn("not in catalog", text)
         self.assertIn("2M", text)
+
+
+class CheckVersionsByDateTests(unittest.TestCase):
+    """xAI numbers decimally: 4.20 (March) precedes 4.3, 4.6 (August) and 4.7 (September)."""
+
+    CATALOG = {
+        "data": [
+            _cat("x-ai/grok-4.20", context=2_000_000, created=MAR_2026),
+            _cat("x-ai/grok-4.3", created=APR_2026),
+            _cat("x-ai/grok-4.6", context=500_000, created=AUG_2026),
+            _cat("x-ai/grok-4.7", context=500_000, created=SEP_2026),
+        ]
+    }
+
+    def _report(self, current_id):
+        entry = {"key": "grok", "name": "Grok", "access_method": "openrouter", "id": current_id}
+        roster = parse_config(_raw([entry], default="grok"))
+        return check_versions(roster, parse_openrouter_catalog(self.CATALOG))[0]
+
+    def test_listing_date_beats_version_arithmetic(self):
+        self.assertEqual(self._report("x-ai/grok-4.6").newest.id, "x-ai/grok-4.7")
+
+    def test_decimal_style_higher_number_is_not_an_upgrade(self):
+        self.assertEqual(self._report("x-ai/grok-4.20").newest.id, "x-ai/grok-4.7")
+        self.assertIsNone(self._report("x-ai/grok-4.7").newest)
+
+    def test_report_shows_both_listing_dates(self):
+        text = format_version_report([self._report("x-ai/grok-4.6")])
+        self.assertIn("2026-08-12", text)
+        self.assertIn("2026-09-21", text)
+
+    def test_version_tuple_is_the_fallback_without_dates(self):
+        catalog = parse_openrouter_catalog({"data": [_cat("v/m-1.2"), _cat("v/m-1.10")]})
+        entry = {"key": "m", "name": "M", "access_method": "openrouter", "id": "v/m-1.2"}
+        roster = parse_config(_raw([entry], default="m"))
+        self.assertEqual(check_versions(roster, catalog)[0].newest.id, "v/m-1.10")
 
 
 class BuildPrPromptTests(unittest.TestCase):
