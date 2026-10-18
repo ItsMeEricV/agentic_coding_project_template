@@ -36,6 +36,13 @@ PR Review Mode (--pr):
 
     uv run cli/agent_code_reviewer.py --pr 60
     uv run cli/agent_code_reviewer.py --model codex --pr 60
+    uv run cli/agent_code_reviewer.py --pr 60 --file docs/rfcs/0009.md
+
+  The whole diff goes in one pass, sized to the entry's `context_window` from
+  the roster. A diff that does not fit is refused (exit 3) with the roster
+  entries that would take it — nothing is silently truncated. `--file` (repeatable)
+  attaches design docs or sibling-layer code as read-only context so the
+  reviewer judges the diff against the real contract, not a guess at it.
 
 Conversation History:
   - One file per roster entry: /tmp/agent_reviewer_<key>.json
@@ -49,6 +56,7 @@ Usage:
   uv run cli/agent_code_reviewer.py "Your question here"
   uv run cli/agent_code_reviewer.py --model codex "Same question via Codex"
   uv run cli/agent_code_reviewer.py --file path/to/file.ts "Review this code"
+  uv run cli/agent_code_reviewer.py --pr 60 --file docs/rfcs/0009.md --file core/session.ts
   uv run cli/agent_code_reviewer.py --pr 60 "Focus on error handling"
   uv run cli/agent_code_reviewer.py --model grok --pr 60
   uv run cli/agent_code_reviewer.py --reset "Start fresh conversation"
@@ -73,6 +81,8 @@ Exit codes:
   1  API error, missing API key, or a `gh` operation failed
   2  roster problem: unreadable/invalid agent_reviewer.toml, or --model naming
      a key that does not exist
+  3  --pr diff does not fit the selected model's context window; the message
+     names the roster entries that would take it
 """
 
 from __future__ import annotations
@@ -119,6 +129,10 @@ PR_REVIEW_SYSTEM_PROMPT: str = (
     "pull request title and description written by the PR author. This is the author's framing "
     "of their own change — use it for context (intent, design decisions, scope), but don't trust "
     "it unconditionally. Push back on issues you find even if the description says otherwise.\n\n"
+    "A <context_files>...</context_files> block may follow, holding files the author attached "
+    "for context: design decisions, RFCs, or code from a layer the diff depends on. Read them "
+    "to learn the contracts and deliberate rulings the diff is written against, and judge the "
+    "diff by them. They are not under review: never emit a comment whose path is one of them.\n\n"
     "IMPORTANT: Respond with a JSON object containing:\n"
     '- "summary": A 2-3 sentence overall assessment, which may include at most 2 sentences '
     "of praise if genuinely warranted (praise is optional — omit it entirely when nothing "
@@ -160,7 +174,20 @@ DEFAULT_IGNORE_PATHS: list[str] = [
 ACCESS_METHODS: tuple[str, ...] = ("openrouter", "gemini_api", "openai_api")
 
 REQUIRED_FIELDS: tuple[str, ...] = ("key", "name", "access_method", "id")
-OPTIONAL_FIELDS: tuple[str, ...] = ("tag", "store")
+OPTIONAL_FIELDS: tuple[str, ...] = ("tag", "store", "context_window")
+
+# Window assumed for a roster entry that declares none. Deliberately small: a
+# too-generous guess truncates nothing but overflows the model, which fails
+# late and expensively. Declare the real figure (`--find-model` prints it).
+DEFAULT_CONTEXT_WINDOW: int = 128_000
+
+# Rough chars-per-token for code and diffs, used to turn a token window into a
+# character budget without a tokenizer dependency.
+CHARS_PER_TOKEN: int = 4
+
+# Tokens held back from the window for the model's JSON reply: a long diff can
+# draw dozens of comments, each with a verbatim code excerpt.
+REPLY_RESERVE_TOKENS: int = 32_000
 
 
 class ConfigError(Exception):
@@ -177,6 +204,11 @@ class ModelEntry:
     id: str
     tag: str
     store: bool = False
+    context_window: int = DEFAULT_CONTEXT_WINDOW
+
+
+class DiffTooLargeError(Exception):
+    """A --pr diff that overflows the selected entry's window. main() exits 3."""
 
 
 @dataclass(frozen=True)
@@ -252,6 +284,14 @@ def parse_config(raw: dict) -> Roster:
                 f"(this one is {access_method})"
             )
 
+        context_window = model.get("context_window", DEFAULT_CONTEXT_WINDOW)
+        if (
+            isinstance(context_window, bool)
+            or not isinstance(context_window, int)
+            or context_window <= 0
+        ):
+            raise ConfigError(f"{where}: `context_window` must be a positive integer (tokens)")
+
         entries.append(
             ModelEntry(
                 key=key,
@@ -260,6 +300,7 @@ def parse_config(raw: dict) -> Roster:
                 id=model["id"],
                 tag=tag,
                 store=store,
+                context_window=context_window,
             )
         )
 
@@ -290,6 +331,7 @@ def format_roster(roster: Roster, verbose: bool = False) -> str:
             f"{entry.key}{marker}",
             entry.access_method,
             entry.id,
+            _compact_count(entry.context_window),
             "set" if adapter.api_key() else f"MISSING {adapter.api_key_env_var()}",
         ]
         if verbose:
@@ -297,7 +339,7 @@ def format_roster(roster: Roster, verbose: bool = False) -> str:
             row.append(f"[{entry.tag}]")
         rows.append(row)
 
-    headers = ["KEY", "ACCESS", "ID", "API KEY"]
+    headers = ["KEY", "ACCESS", "ID", "CONTEXT", "API KEY"]
     if verbose:
         headers.insert(1, "NAME")
         headers.append("TAG")
@@ -975,7 +1017,7 @@ def post_pr_review(
     PR diff get bucketed into the review body's "Additional comments"
     section instead of being submitted as inline (which would 422). The
     `diff` argument is the unified diff used to compute anchor eligibility;
-    pass the full pre-truncation diff so anchor validation matches what
+    pass the full filtered diff so anchor validation matches what
     GitHub sees, not what the model saw."""
     pr_info = get_pr_info(pr_number)
     commit_id = pr_info.get("headRefOid", "")
@@ -1117,13 +1159,50 @@ def post_pr_review(
         )
 
 
+def diff_char_budget(context_window: int, overhead_chars: int) -> int:
+    """Characters of annotated diff that fit beside `overhead_chars` of prompt
+    (system prompt, PR description, attached files) with the reply reserve held back."""
+    return max(0, (context_window - REPLY_RESERVE_TOKENS) * CHARS_PER_TOKEN - overhead_chars)
+
+
+def entries_that_fit(roster: Roster, needed_chars: int, overhead_chars: int) -> list[ModelEntry]:
+    """Roster entries, in roster order, whose window takes `needed_chars` of diff."""
+    return [
+        e
+        for e in roster.entries
+        if diff_char_budget(e.context_window, overhead_chars) >= needed_chars
+    ]
+
+
+def build_pr_prompt(
+    annotated_diff: str,
+    context_block: str,
+    extra_instructions: str,
+    context_files: list[tuple[str, str]],
+) -> str:
+    """User turn for --pr: instructions, PR description, attached files, then the diff."""
+    files_block = ""
+    if context_files:
+        files_block = (
+            "<context_files>\n"
+            + "".join(f'<file path="{path}">\n{body}\n</file>\n' for path, body in context_files)
+            + "</context_files>\n\n"
+        )
+    prompt = f"{context_block}{files_block}Review this PR diff:\n\n```diff\n{annotated_diff}\n```"
+    if extra_instructions:
+        prompt = f"{extra_instructions}\n\n{prompt}"
+    return prompt
+
+
 def review_pr(
     pr_number: str,
     adapter: Adapter,
+    roster: Roster,
     extra_instructions: str = "",
     ignore_paths: list[str] | None = None,
+    context_files: list[tuple[str, str]] | None = None,
 ) -> None:
-    """Full PR review flow: fetch diff → filter ignored paths → review → post."""
+    """Full PR review flow: fetch diff → filter ignored paths → size check → review → post."""
     print(
         f"--> Reviewing PR #{pr_number} with {adapter.entry.name} ({adapter.entry.id})",
         file=sys.stderr,
@@ -1153,16 +1232,6 @@ def review_pr(
         )
         return
 
-    # Capture full filtered diff for anchor validation before truncation —
-    # GitHub validates against the real diff, not what we sent the model.
-    full_diff_for_anchors = diff
-
-    # Truncate very large diffs to stay within token limits
-    max_diff_chars = 100_000  # ~25K tokens
-    if len(diff) > max_diff_chars:
-        diff = diff[:max_diff_chars] + "\n\n... [diff truncated] ..."
-        print(f"--> Diff truncated to {max_diff_chars} chars", file=sys.stderr)
-
     annotated_diff = annotate_diff_with_line_numbers(diff)
 
     # Give the reviewer the author's framing (intent, scope, design choices)
@@ -1180,9 +1249,32 @@ def review_pr(
             "</pr_description>\n\n"
         )
 
-    prompt = f"{context_block}Review this PR diff:\n\n```diff\n{annotated_diff}\n```"
-    if extra_instructions:
-        prompt = f"{extra_instructions}\n\n{prompt}"
+    # Everything in the prompt that is not the diff competes with it for the window.
+    overhead = len(build_pr_prompt("", context_block, extra_instructions, context_files or []))
+    overhead += len(PR_REVIEW_SYSTEM_PROMPT)
+    entry = adapter.entry
+    budget = diff_char_budget(entry.context_window, overhead)
+    if len(annotated_diff) > budget:
+        fits = [e.key for e in entries_that_fit(roster, len(annotated_diff), overhead)]
+        hint = (
+            f"Roster entries that would take it: {', '.join(fits)} (pass --model)."
+            if fits
+            else "No roster entry takes it whole: split the PR by vertical "
+            "(one invariant's router + workflow + store together) with --ignore-path, "
+            "never by layer."
+        )
+        raise DiffTooLargeError(
+            f"diff is ~{len(annotated_diff) // CHARS_PER_TOKEN:,} tokens after annotation; "
+            f"{entry.key} ({_compact_count(entry.context_window)} window) has room for "
+            f"~{budget // CHARS_PER_TOKEN:,} beside the prompt. {hint}"
+        )
+    print(
+        f"--> Diff ~{len(annotated_diff) // CHARS_PER_TOKEN:,} tokens of "
+        f"~{budget // CHARS_PER_TOKEN:,} available on {entry.key}",
+        file=sys.stderr,
+    )
+
+    prompt = build_pr_prompt(annotated_diff, context_block, extra_instructions, context_files or [])
 
     # Single-turn review — no persisted history.
     history: list[dict] = []
@@ -1213,14 +1305,14 @@ def review_pr(
     print(f"\n{summary}\n", file=sys.stderr)
     print(f"  {len(comments)} inline comment(s)", file=sys.stderr)
 
-    # Post to GitHub — pass full pre-truncation diff so anchor validation
-    # matches what GitHub sees, not what the model saw.
+    # Post to GitHub — the model saw the whole filtered diff, so anchors
+    # validate against exactly what it reviewed.
     post_pr_review(
         pr_number,
         summary,
         comments,
         attribution=adapter.entry.tag,
-        diff=full_diff_for_anchors,
+        diff=diff,
     )
     print(f"--> Review posted to PR #{pr_number}", file=sys.stderr)
 
@@ -1265,7 +1357,18 @@ def main() -> None:
             "a roster entry needs. Needs no API key. Exit 1 if nothing matches."
         ),
     )
-    parser.add_argument("--file", dest="file_path", default="", help="Attach file content")
+    parser.add_argument(
+        "--file",
+        dest="file_paths",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help=(
+            "Attach a file's content. Repeatable. With --pr it rides along as read-only "
+            "context (an RFC, a decision log, code from a layer the diff depends on) "
+            "that the reviewer judges the diff against but does not comment on."
+        ),
+    )
     parser.add_argument(
         "--system", dest="system_prompt", default="", help="Override system prompt"
     )
@@ -1357,10 +1460,29 @@ def main() -> None:
         )
         sys.exit(1)
 
+    attached: list[tuple[str, str]] = []
+    for file_path in args.file_paths:
+        path = Path(file_path)
+        if not path.is_file():
+            print(f"Error: File not found: {file_path}", file=sys.stderr)
+            sys.exit(1)
+        attached.append((file_path, path.read_text()))
+
     # PR review mode
     if args.pr_number:
         ignore_paths = list(DEFAULT_IGNORE_PATHS) + args.ignore_paths
-        review_pr(args.pr_number, adapter, args.message, ignore_paths=ignore_paths)
+        try:
+            review_pr(
+                args.pr_number,
+                adapter,
+                roster,
+                args.message,
+                ignore_paths=ignore_paths,
+                context_files=attached,
+            )
+        except DiffTooLargeError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(3)
         return
 
     # --reset combined with a message: reset first, then proceed to send.
@@ -1371,21 +1493,12 @@ def main() -> None:
         parser.print_help()
         sys.exit(1)
 
-    # Load file content
-    file_content = ""
-    if args.file_path:
-        path = Path(args.file_path)
-        if not path.is_file():
-            print(f"Error: File not found: {args.file_path}", file=sys.stderr)
-            sys.exit(1)
-        file_content = path.read_text()
-
     print(f"--> Model: {entry.name} ({entry.id})", file=sys.stderr)
 
     # Build full message
     full_message = message
-    if file_content:
-        full_message = f"{message}\n\n```\n{file_content}\n```"
+    for _, file_content in attached:
+        full_message += f"\n\n```\n{file_content}\n```"
 
     # Token estimate for large context warning
     token_est = len(full_message) // 4

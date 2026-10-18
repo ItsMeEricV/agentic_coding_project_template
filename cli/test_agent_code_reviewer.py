@@ -12,9 +12,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from agent_code_reviewer import (  # noqa: E402
+    DEFAULT_CONTEXT_WINDOW,
+    REPLY_RESERVE_TOKENS,
     ConfigError,
     _build_line_content_index,
     annotate_diff_with_line_numbers,
+    build_pr_prompt,
+    diff_char_budget,
+    entries_that_fit,
     filter_catalog,
     format_catalog,
     load_config,
@@ -255,6 +260,97 @@ class ParseConfigTests(unittest.TestCase):
                 del model[field]
                 with self.assertRaises(ConfigError):
                     parse_config(_raw([model], default="a"))
+
+
+class ContextWindowTests(unittest.TestCase):
+    def test_defaults_when_omitted(self):
+        self.assertEqual(parse_config(_raw()).entries[0].context_window, DEFAULT_CONTEXT_WINDOW)
+
+    def test_explicit_value_wins(self):
+        models = [
+            {
+                "key": "a",
+                "name": "A",
+                "access_method": "gemini_api",
+                "id": "m",
+                "context_window": 1_050_000,
+            }
+        ]
+        self.assertEqual(parse_config(_raw(models)).entries[0].context_window, 1_050_000)
+
+    def test_rejects_non_positive_or_non_int(self):
+        for bad in (0, -1, "1M", 1.5, True):
+            models = [
+                {
+                    "key": "a",
+                    "name": "A",
+                    "access_method": "gemini_api",
+                    "id": "m",
+                    "context_window": bad,
+                }
+            ]
+            with self.subTest(bad=bad), self.assertRaises(ConfigError):
+                parse_config(_raw(models))
+
+    def test_shipped_roster_declares_every_window(self):
+        """A missing window silently falls back to the conservative default — keep the
+        committed roster explicit so --list shows what each model can really take."""
+        toml = (Path(__file__).resolve().parent / "agent_reviewer.toml").read_text()
+        roster = load_config(Path(__file__).resolve().parent / "agent_reviewer.toml")
+        self.assertEqual(toml.count("context_window"), len(roster.entries) + 1)  # + header doc
+
+
+class DiffBudgetTests(unittest.TestCase):
+    def test_budget_is_window_minus_reply_reserve_in_chars_minus_overhead(self):
+        budget = diff_char_budget(context_window=100_000, overhead_chars=1_000)
+        self.assertEqual(budget, (100_000 - REPLY_RESERVE_TOKENS) * 4 - 1_000)
+
+    def test_budget_never_negative(self):
+        self.assertEqual(diff_char_budget(context_window=1_000, overhead_chars=10), 0)
+
+    def test_old_hardcoded_cap_is_far_below_a_million_token_window(self):
+        """Regression guard for the 100 KB cap that forced layer-wise slicing."""
+        self.assertGreater(diff_char_budget(1_050_000, 0), 759_000 * 4)
+
+    def test_entries_that_fit_lists_only_wide_enough_windows_in_roster_order(self):
+        def entry(key, window):
+            return {
+                "key": key,
+                "name": key,
+                "access_method": "gemini_api",
+                "id": key,
+                "context_window": window,
+            }
+
+        models = [entry("small", 200_000), entry("big", 1_050_000), entry("mid", 500_000)]
+        roster = parse_config(_raw(models, default="small"))
+        needed_chars = 759_000 * 4  # a ~760K-token diff; only the 1M window takes it
+        fits = entries_that_fit(roster, needed_chars=needed_chars, overhead_chars=5_000)
+        self.assertEqual([e.key for e in fits], ["big"])
+
+
+class BuildPrPromptTests(unittest.TestCase):
+    def test_diff_only(self):
+        prompt = build_pr_prompt("X", context_block="", extra_instructions="", context_files=[])
+        self.assertTrue(prompt.startswith("Review this PR diff:"))
+        self.assertNotIn("<context_files>", prompt)
+
+    def test_order_is_instructions_then_description_then_files_then_diff(self):
+        prompt = build_pr_prompt(
+            "DIFF",
+            context_block="<pr_description>\nTitle: t\n</pr_description>\n\n",
+            extra_instructions="Focus on cancel paths.",
+            context_files=[("docs/rfcs/0009.md", "# RFC 0009\nD4: resume adds max_attempts.")],
+        )
+        i_instr = prompt.index("Focus on cancel paths.")
+        i_desc = prompt.index("<pr_description>")
+        i_files = prompt.index('<file path="docs/rfcs/0009.md">')
+        i_diff = prompt.index("Review this PR diff:")
+        self.assertLess(i_instr, i_desc)
+        self.assertLess(i_desc, i_files)
+        self.assertLess(i_files, i_diff)
+        self.assertIn("D4: resume adds max_attempts.", prompt)
+        self.assertIn("</context_files>", prompt)
 
 
 class RosterLookupTests(unittest.TestCase):
