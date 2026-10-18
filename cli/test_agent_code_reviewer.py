@@ -25,6 +25,7 @@ from agent_code_reviewer import (  # noqa: E402
     check_versions,
     churn_by_file,
     diff_char_budget,
+    drop_already_posted,
     entries_that_fit,
     filter_catalog,
     filter_diff,
@@ -467,6 +468,21 @@ class RetryTests(unittest.TestCase):
         with self.assertRaises(_StatusError):
             adapter.call({}, sleep=lambda _s: None)
         self.assertEqual(len(calls), 1)
+
+
+class DedupeTests(unittest.TestCase):
+    def test_drops_only_exact_path_and_line_matches(self):
+        comments = [
+            {"path": "a.ts", "line": 10, "body": "x"},
+            {"path": "a.ts", "line": 11, "body": "y"},
+            {"path": "b.ts", "line": 10, "body": "z"},
+        ]
+        kept = drop_already_posted(comments, {("a.ts", 10)})
+        self.assertEqual([(c["path"], c["line"]) for c in kept], [("a.ts", 11), ("b.ts", 10)])
+
+    def test_empty_posted_set_is_identity(self):
+        comments = [{"path": "a.ts", "line": 1, "body": "x"}]
+        self.assertEqual(drop_already_posted(comments, set()), comments)
 
 
 class ChurnTests(unittest.TestCase):

@@ -34,6 +34,9 @@ PR Review Mode (--pr):
   Fetches the PR diff via `gh`, sends it to the selected model for line-level
   review, and posts comments directly on the PR as inline review comments.
   Each comment is prefixed with the entry's attribution tag, e.g. **[GEMINI]**.
+  A comment at a file and line that tag already commented on is skipped, so a
+  repeat run does not restate settled points. `--dry-run` prints the review
+  as JSON instead of posting it.
 
     uv run cli/agent_code_reviewer.py --pr 60
     uv run cli/agent_code_reviewer.py --model codex --pr 60
@@ -69,6 +72,7 @@ Usage:
   uv run cli/agent_code_reviewer.py --pr 60 "Focus on error handling"
   uv run cli/agent_code_reviewer.py --pr 60 --only-path 'core/session/' --only-path 'apps/api/session.ts'
   uv run cli/agent_code_reviewer.py --model grok --pr 60
+  uv run cli/agent_code_reviewer.py --pr 60 --dry-run
   uv run cli/agent_code_reviewer.py --reset "Start fresh conversation"
   uv run cli/agent_code_reviewer.py --session abc123 "Scoped to this session"
   uv run cli/agent_code_reviewer.py --ttl 60 "Keep history for 1 hour"
@@ -1224,6 +1228,38 @@ def _build_line_content_index(diff: str) -> dict[str, dict[str, list[int]]]:
     return result
 
 
+def existing_comment_anchors(pr_number: str, attribution: str) -> set[tuple[str, int]]:
+    """(path, line) of every inline comment this attribution tag already left
+    on the PR. Empty on any `gh` failure: posting a duplicate beats losing a
+    review to a lookup error."""
+    result = subprocess.run(
+        [
+            "gh", "api", "--paginate",
+            f"repos/{{owner}}/{{repo}}/pulls/{pr_number}/comments",
+            "--jq", ".[] | [.path, (.line // .original_line // 0), .body] | @json",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print(f"Warning: could not list existing comments: {result.stderr[:200]}", file=sys.stderr)
+        return set()
+    anchors: set[tuple[str, int]] = set()
+    for row in result.stdout.splitlines():
+        try:
+            path, line, body = json.loads(row)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(body, str) and body.startswith(f"**[{attribution}]**") and line:
+            anchors.add((path, int(line)))
+    return anchors
+
+
+def drop_already_posted(comments: list[dict], posted: set[tuple[str, int]]) -> list[dict]:
+    """Comments whose (path, line) this tag has not already commented on."""
+    return [c for c in comments if (c.get("path", ""), c.get("line")) not in posted]
+
+
 def post_pr_review(
     pr_number: str,
     summary: str,
@@ -1256,6 +1292,16 @@ def post_pr_review(
         )
     anchorable = _parse_diff_anchorable_lines(diff) if diff else {}
     content_index = _build_line_content_index(diff) if diff else {}
+
+    if comments:
+        before = len(comments)
+        comments = drop_already_posted(comments, existing_comment_anchors(pr_number, attribution))
+        if len(comments) < before:
+            print(
+                f"--> Skipped {before - len(comments)} comment(s) already posted by "
+                f"[{attribution}] at the same file and line",
+                file=sys.stderr,
+            )
 
     valid_inline: list[dict] = []
     invalid_fallback: list[dict] = []
@@ -1515,12 +1561,14 @@ def review_pr(
     only_paths: list[str] | None = None,
     context_files: list[tuple[str, str]] | None = None,
     whole_pass: bool = True,
+    dry_run: bool = False,
 ) -> None:
     """Full PR review flow: fetch diff → filter paths → size check → review → post.
 
     `whole_pass` is False when the caller restricted the diff (a vertical
     slice). A slice still prints any focus areas it nominates, but does not
-    overwrite the whole pass's focus file, which is the one the skill reads."""
+    overwrite the whole pass's focus file, which is the one the skill reads.
+    `dry_run` prints the parsed review as JSON on stdout instead of posting."""
     print(
         f"--> Reviewing PR #{pr_number} with {adapter.entry.name} ({adapter.entry.id})",
         file=sys.stderr,
@@ -1613,7 +1661,8 @@ def review_pr(
     except json.JSONDecodeError:
         print("Response not valid JSON, posting as summary:", file=sys.stderr)
         print(text, file=sys.stderr)
-        # Post raw text as review body
+        if dry_run:
+            return
         post_pr_review(pr_number, text, [], attribution=adapter.entry.tag)
         return
 
@@ -1633,6 +1682,11 @@ def review_pr(
     for area in areas:
         print(f"    - {area.title}: {', '.join(area.paths)}", file=sys.stderr)
     summary += format_focus_section(areas)
+
+    if dry_run:
+        print(json.dumps({"summary": summary, "comments": comments}, indent=2))
+        print("--> Dry run: nothing posted", file=sys.stderr)
+        return
 
     # Post to GitHub — the model saw the whole filtered diff, so anchors
     # validate against exactly what it reviewed.
@@ -1738,6 +1792,15 @@ def main() -> None:
             "names its handful of files instead of excluding everything else."
         ),
     )
+    parser.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help=(
+            "With --pr, run the review and print it as JSON on stdout instead of "
+            "posting to GitHub. The focus file is still written on a whole pass."
+        ),
+    )
     parser.add_argument("--session", dest="session", default="", help="Session ID to scope history (e.g. a UUID per conversation)")
     parser.add_argument("--ttl", dest="ttl_minutes", type=int, default=DEFAULT_TTL_MINUTES, help=f"Prune history older than N minutes (default: {DEFAULT_TTL_MINUTES}, 0 to disable)")
     parser.add_argument("--reset", action="store_true", help="Reset conversation history")
@@ -1841,6 +1904,7 @@ def main() -> None:
                 only_paths=args.only_paths,
                 context_files=attached,
                 whole_pass=not (args.ignore_paths or args.only_paths),
+                dry_run=args.dry_run,
             )
         except DiffTooLargeError as exc:
             print(f"Error: {exc}", file=sys.stderr)
