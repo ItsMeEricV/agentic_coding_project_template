@@ -18,14 +18,17 @@ from agent_code_reviewer import (  # noqa: E402
     _build_line_content_index,
     annotate_diff_with_line_numbers,
     build_pr_prompt,
+    check_versions,
     churn_by_file,
     diff_char_budget,
     entries_that_fit,
     filter_catalog,
     format_catalog,
     format_focus_section,
+    format_version_report,
     load_config,
     make_adapter,
+    model_family,
     parse_config,
     parse_focus_areas,
     parse_openrouter_catalog,
@@ -376,7 +379,7 @@ class FocusAreaTests(unittest.TestCase):
         areas = parse_focus_areas({"focus_areas": [self.GOOD]})
         self.assertEqual(len(areas), 1)
         self.assertEqual(areas[0].title, "Cancel vs. abandon race")
-        self.assertEqual(areas[0].paths, ["apps/dispatcher-core/src/workflows/session-workflow.ts"])
+        self.assertEqual(areas[0].paths, [self.GOOD["paths"][0]])
 
     def test_drops_malformed_entries_and_non_string_paths(self):
         bad = [
@@ -408,6 +411,104 @@ class FocusSectionTests(unittest.TestCase):
         self.assertIn("**Cancel vs. abandon race**", section)
         self.assertIn("abandonStepRun(cancelled)", section)
         self.assertIn("`apps/dispatcher-core/src/workflows/session-workflow.ts`", section)
+
+
+def _cat(id, context=1_000_000, alias="", prompt="0.000005"):
+    return {
+        "id": id,
+        "name": id,
+        "context_length": context,
+        "pricing": {"prompt": prompt, "completion": "0.00002"},
+        **({"alias_target": {"slug": alias}} if alias else {}),
+    }
+
+
+class ModelFamilyTests(unittest.TestCase):
+    def test_version_is_the_first_numeric_run(self):
+        self.assertEqual(model_family("anthropic/claude-opus-5"), ("anthropic/claude-opus", (5,)))
+        self.assertEqual(
+            model_family("anthropic/claude-opus-5.5"), ("anthropic/claude-opus", (5, 5))
+        )
+        self.assertEqual(model_family("openai/gpt-6.1-sol"), ("openai/gpt-sol", (6, 1)))
+        self.assertEqual(model_family("openai/gpt-6-astra-pro"), ("openai/gpt-astra-pro", (6,)))
+        self.assertEqual(
+            model_family("google/gemini-3.1-flash-lite-preview"),
+            ("google/gemini-flash-lite-preview", (3, 1)),
+        )
+
+    def test_hyphenated_version_run(self):
+        self.assertEqual(
+            model_family("anthropic/claude-3-5-sonnet-20241022"),
+            ("anthropic/claude-sonnet-20241022", (3, 5)),
+        )
+
+    def test_no_version(self):
+        self.assertEqual(model_family("openai/o-mini"), ("openai/o-mini", ()))
+
+    def test_variant_suffix_is_part_of_the_family(self):
+        self.assertNotEqual(model_family("z-ai/glm-5.3")[0], model_family("z-ai/glm-5.3:free")[0])
+
+
+class CheckVersionsTests(unittest.TestCase):
+    CATALOG = {
+        "data": [
+            _cat("anthropic/claude-opus-5"),
+            _cat("anthropic/claude-opus-5.5", prompt="0.000004"),
+            _cat("anthropic/claude-opus-5.5:batch"),
+            _cat("~anthropic/claude-opus-latest", alias="anthropic/claude-opus-5.5"),
+            _cat("anthropic/claude-opus-5.5-pro"),
+            _cat("openai/gpt-6.1-sol"),
+            _cat("google/gemini-3.1-pro-preview"),
+            _cat("google/gemini-3.2-pro-preview", context=2_000_000),
+        ]
+    }
+
+    def _roster(self):
+        def entry(key, access_method, id):
+            return {"key": key, "name": key, "access_method": access_method, "id": id}
+
+        return parse_config(
+            _raw(
+                [
+                    entry("opus", "openrouter", "anthropic/claude-opus-5"),
+                    entry("sol", "openrouter", "openai/gpt-6.1-sol"),
+                    entry("gem", "gemini_api", "gemini-3.1-pro-preview"),
+                    entry("ghost", "openrouter", "x-ai/grok-9"),
+                ],
+                default="opus",
+            )
+        )
+
+    def _report(self):
+        reports = check_versions(self._roster(), parse_openrouter_catalog(self.CATALOG))
+        return {r.entry.key: r for r in reports}
+
+    def test_reports_newest_same_family_pinned_id(self):
+        report = self._report()
+        self.assertEqual(report["opus"].newest.id, "anthropic/claude-opus-5.5")
+        self.assertIsNone(report["sol"].newest)
+        self.assertTrue(report["sol"].in_catalog)
+
+    def test_aliases_batch_and_suffixed_variants_are_not_upgrades(self):
+        report = self._report()
+        # not the :batch variant, the ~alias, or the -pro sibling
+        self.assertEqual(report["opus"].newest.id, "anthropic/claude-opus-5.5")
+
+    def test_direct_api_ids_match_by_catalog_suffix(self):
+        report = self._report()
+        self.assertEqual(report["gem"].newest.id, "google/gemini-3.2-pro-preview")
+
+    def test_entry_missing_from_catalog_is_flagged(self):
+        report = self._report()
+        self.assertFalse(report["ghost"].in_catalog)
+        self.assertIsNone(report["ghost"].newest)
+
+    def test_report_format(self):
+        text = format_version_report(list(self._report().values()))
+        self.assertIn("anthropic/claude-opus-5.5", text)
+        self.assertIn("up to date", text)
+        self.assertIn("not in catalog", text)
+        self.assertIn("2M", text)
 
 
 class BuildPrPromptTests(unittest.TestCase):

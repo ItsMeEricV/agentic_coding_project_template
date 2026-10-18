@@ -56,6 +56,8 @@ If you're unsure, omit `--model` — the roster's `default` is set to the deep m
 
 Never edit `cli/agent_reviewer.toml` unless the user asked. Adding an entry commits a model choice to the repo for every future run.
 
+To see whether an existing entry has fallen behind, run `uv run cli/agent_code_reviewer.py --check-versions`: it compares every entry against the public catalog and reports a newer pinned id in the same family (`claude-opus-5` → `claude-opus-5.5`), with its window and price. Report only. Bump an entry's `id`, `name`, and `context_window` together, and only when the user asks.
+
 When they do ask ("add GPT Astra to the roster"), the only hard part is the provider's exact `id`. **Never guess a slug from a marketing name** — resolve it:
 
 ```bash

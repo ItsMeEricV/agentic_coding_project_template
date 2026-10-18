@@ -18,6 +18,7 @@ new *access method* is the only change that needs Python.
 
   uv run cli/agent_code_reviewer.py --list             # resolved roster + key status
   uv run cli/agent_code_reviewer.py --find-model astra # search for a new model id
+  uv run cli/agent_code_reviewer.py --check-versions   # newer same-family ids per entry
 
 Setup:
   Only the access methods you actually use need a key.
@@ -71,6 +72,7 @@ Usage:
   uv run cli/agent_code_reviewer.py --system "You are a security auditor" "Check for XSS"
   uv run cli/agent_code_reviewer.py --list --verbose
   uv run cli/agent_code_reviewer.py --find-model "gpt-6"
+  uv run cli/agent_code_reviewer.py --check-versions
 
   Running under bare `python3` works for every access method except
   `openrouter`, whose SDK import is deferred until that adapter is used.
@@ -441,6 +443,75 @@ def _per_million(price: object) -> float:
         return float(price) * 1_000_000  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return 0.0
+
+
+def model_family(model_id: str) -> tuple[str, tuple[int, ...]]:
+    """Split an id into (family, version): `anthropic/claude-opus-5.5` ->
+    ("anthropic/claude-opus", (5, 5)). The version is the first numeric token plus
+    any integer tokens right after it (`claude-3-5-sonnet` -> (3, 5)); everything
+    else, suffixes and `:variant` included, is the family, so `-pro`, `-preview`,
+    and `:free` never pass as upgrades of the plain id."""
+    vendor, _, rest = model_id.rpartition("/")
+    tokens = rest.split("-")
+    k = next((i for i, t in enumerate(tokens) if re.fullmatch(r"\d+(\.\d+)*", t)), None)
+    if k is None:
+        return model_id, ()
+    version = [int(part) for part in tokens[k].split(".")]
+    j = k + 1
+    while j < len(tokens) and re.fullmatch(r"\d+", tokens[j]):
+        version.append(int(tokens[j]))
+        j += 1
+    family = "-".join(tokens[:k] + tokens[j:])
+    return (f"{vendor}/{family}" if vendor else family), tuple(version)
+
+
+@dataclass(frozen=True)
+class VersionReport:
+    entry: ModelEntry
+    in_catalog: bool
+    newest: CatalogModel | None  # a newer pinned id in the same family, else None
+
+
+def check_versions(roster: Roster, catalog: list[CatalogModel]) -> list[VersionReport]:
+    """For each roster entry, the newest same-family pinned catalog id, if newer.
+
+    Direct-API ids (`gemini-3.1-pro-preview`) match the catalog entry whose id
+    ends with `/<id>`. Aliases and batch variants are never offered as upgrades."""
+    pinned = [m for m in catalog if not m.alias_target and not m.is_batch]
+    reports: list[VersionReport] = []
+    for entry in roster.entries:
+        match = next(
+            (m for m in pinned if m.id == entry.id or m.id.endswith("/" + entry.id)), None
+        )
+        if match is None:
+            reports.append(VersionReport(entry, in_catalog=False, newest=None))
+            continue
+        family, version = model_family(match.id)
+        newer = [
+            m
+            for m in pinned
+            if model_family(m.id)[0] == family and model_family(m.id)[1] > version
+        ]
+        newest = max(newer, key=lambda m: model_family(m.id)[1], default=None)
+        reports.append(VersionReport(entry, in_catalog=True, newest=newest))
+    return reports
+
+
+def format_version_report(reports: list[VersionReport]) -> str:
+    rows = []
+    for r in reports:
+        if not r.in_catalog:
+            status, newest, context, price = "not in catalog", "", "", ""
+        elif r.newest is None:
+            status, newest, context, price = "up to date", "", "", ""
+        else:
+            status = "newer"
+            newest = r.newest.id
+            context = _compact_count(r.newest.context_length)
+            price = f"${r.newest.prompt_price:g}/${r.newest.completion_price:g}"
+        rows.append([r.entry.key, r.entry.id, status, newest, context, price])
+    headers = ["KEY", "CURRENT ID", "STATUS", "NEWEST ID", "CONTEXT", "$IN/$OUT per M"]
+    return _render_table(headers, rows)
 
 
 def filter_catalog(models: list[CatalogModel], query: str) -> list[CatalogModel]:
@@ -1460,6 +1531,16 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--check-versions",
+        dest="check_versions",
+        action="store_true",
+        help=(
+            "Compare every roster entry against OpenRouter's public catalog and report "
+            "newer same-family ids (e.g. claude-opus-5 -> claude-opus-5.5). Report only; "
+            "the roster is never edited. Needs no API key."
+        ),
+    )
+    parser.add_argument(
         "--file",
         dest="file_paths",
         action="append",
@@ -1521,6 +1602,14 @@ def main() -> None:
         roster = load_config()
         if args.list:
             print(format_roster(roster, verbose=args.verbose))
+            return
+        if args.check_versions:
+            try:
+                catalog = parse_openrouter_catalog(fetch_openrouter_catalog())
+            except (urllib.error.URLError, json.JSONDecodeError, OSError) as exc:
+                print(f"Error: could not fetch {OPENROUTER_CATALOG_URL}: {exc}", file=sys.stderr)
+                sys.exit(1)
+            print(format_version_report(check_versions(roster, catalog)))
             return
         entry = roster.get(args.model_key) if args.model_key else roster.default_entry()
     except ConfigError as exc:
