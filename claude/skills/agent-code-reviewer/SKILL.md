@@ -81,7 +81,7 @@ A model reachable only through a direct provider API (a preview id OpenRouter ha
 A load-bearing PR gets two kinds of pass, and they catch different bugs:
 
 1. **One whole-diff pass, always.** The script sizes the diff to the entry's `context_window` and refuses one that does not fit (exit 3) instead of truncating it; a refusal names the entries that would take it, so switch model rather than split. This pass sees every layer, so it is the one that judges cross-layer contracts correctly.
-2. **Vertical slices only when the whole pass earns them; default zero.** Attention per line drops as the prompt grows, so on a 190K-token PR the races and off-by-one-attempt bugs that four small passes found will not all surface in one. On a 40K-token PR that loss does not exist, and a slice is a second full review of the same code. Each slice is a second read of code the whole pass already covered, so one whole pass plus three slices costs more than the four layer passes it replaced; the gate below is what keeps that from being the norm. A slice is one invariant's router, workflow, and store together, `--ignore-path` dropping the rest, `--file` attaching the sibling interfaces it still depends on, and the invariant as the question. Never slice **by layer**: a reviewer that sees the router without the workflow that produces its events flags contracts the missing layer enforces, and every such finding is a false positive you then disprove on the PR.
+2. **Vertical slices only when the whole pass earns them; default zero.** Attention per line drops as the prompt grows, so on a 190K-token PR the races and off-by-one-attempt bugs that four small passes found will not all surface in one. On a 40K-token PR that loss does not exist, and a slice is a second full review of the same code. Each slice is a second read of code the whole pass already covered, so one whole pass plus three slices costs more than the four layer passes it replaced; the gate below is what keeps that from being the norm. A slice is one invariant's router, workflow, and store together, `--only-path` naming them, `--file` attaching the sibling interfaces it still depends on, and the invariant as the question. Never slice **by layer**: a reviewer that sees the router without the workflow that produces its events flags contracts the missing layer enforces, and every such finding is a false positive you then disprove on the PR.
 
 ### Choosing vertical slices
 
@@ -93,7 +93,7 @@ Start from zero. A slice runs only when it passes the gate and you have written 
 
 Sources, in the order they are trusted. Dedupe candidates by file overlap:
 
-1. **Reviewer-nominated.** The whole-diff pass may return `focus_areas`: invariants it could not settle from the diff alone, with the files a focused pass must see together. They are posted under "Suggested focused passes" in the review body and written, with per-file churn, to `/tmp/agent_reviewer_pr<N>_focus.json`. Read that file first. Nominating "the hard part is here" survives a long prompt far better than finding the bug in it, which is why this is the only source that clears the gate on its own. It still does not guarantee a slice: a nomination whose files the whole pass already judged cleanly, with the enforcing code in view, is a nomination to decline.
+1. **Reviewer-nominated.** The whole-diff pass may return `focus_areas`: invariants it could not settle from the diff alone, with the files a focused pass must see together. They are posted under "Suggested focused passes" in the review body and written, with per-file churn, to `/tmp/agent_reviewer_<owner>_<repo>_pr<N>_focus.json`. Read that file first. Nominating "the hard part is here" survives a long prompt far better than finding the bug in it, which is why this is the only source that clears the gate on its own. It still does not guarantee a slice: a nomination whose files the whole pass already judged cleanly, with the enforcing code in view, is a nomination to decline.
 2. **Project-declared.** `ARCHITECTURE.md` lists the system's invariants with the paths that enforce them; an invariant whose paths this diff touches **and** the whole pass left a signal on is a candidate. `KNOWLEDGE.md`'s flagged ambiguities mark places the team itself is unsure — a touched term there is a candidate too. `AGENTS.md` rules are generic and belong to the risk vocabulary below, not slice selection.
 3. **Diff-derived.** From the focus file's `churn`: the most-changed files, and code changes with no matching test changes. Objective and free to compute, but a tie-breaker between candidates that already have a signal, never a reason to slice on its own.
 4. **Risk vocabulary.** Shared mutable state, retry and idempotency paths, authorization boundaries, migrations, money. This names what a signal in the first three sources tends to be about; it is not a checklist to slice through. An empty nomination list does not get a slice from here.
@@ -104,11 +104,11 @@ Give the reviewer the rationale, not a rule list. A paragraph of "binding rules"
 uv run cli/agent_code_reviewer.py --pr 67 --file docs/rfcs/0009-session-workflow.md "Focus on cancellation and retry paths"
 ```
 
-A slice attaches the sibling layer's interface file the same way, so the contract is in the prompt even though its implementation is not, and names the invariant from the focus area or `ARCHITECTURE.md` as its question:
+A slice attaches the sibling layer's interface file the same way, so the contract is in the prompt even though its implementation is not, and names the invariant from the focus area or `ARCHITECTURE.md` as its question. The reviewer is told that "holds" and "unsettled" are complete answers, so phrase the invariant as something that can hold; `--dry-run` lets you read a slice's output before any of it reaches the PR:
 
 ```bash
-uv run cli/agent_code_reviewer.py --pr 67 --ignore-path 'packages/config-schema/' --ignore-path 'docs/' \
-  --file packages/core/session/session-service.ts --file docs/rfcs/0009-session-workflow.md \
+uv run cli/agent_code_reviewer.py --pr 67 --only-path 'packages/core/session/' --only-path 'apps/dispatcher-core/src/workflows/' \
+  --file packages/core/session/session-service.ts --file docs/rfcs/0009-session-workflow.md --dry-run \
   "Check one invariant: a cancelled task always ends in abandonStepRun(cancelled), and no sandbox outlives its session."
 ```
 
