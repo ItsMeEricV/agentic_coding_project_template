@@ -48,8 +48,10 @@ PR Review Mode (--pr):
   Besides its comments the reviewer may nominate up to three focus areas: an
   invariant it could not settle from the diff alone, and the files that
   enforce it. They go in the review body and, with per-file churn, into
-  /tmp/agent_reviewer_pr<N>_focus.json for the skill to turn into vertical
-  slices (`--ignore-path` to the area, `--file` for its sibling interfaces).
+  /tmp/agent_reviewer_<owner>_<repo>_pr<N>_focus.json for the skill to turn
+  into vertical slices (`--only-path` to the area's files, `--file` for its
+  sibling interfaces). A run with --only-path or --ignore-path is a slice and
+  leaves that file alone.
 
 Conversation History:
   - One file per roster entry: /tmp/agent_reviewer_<key>.json
@@ -65,6 +67,7 @@ Usage:
   uv run cli/agent_code_reviewer.py --file path/to/file.ts "Review this code"
   uv run cli/agent_code_reviewer.py --pr 60 --file docs/rfcs/0009.md --file core/session.ts
   uv run cli/agent_code_reviewer.py --pr 60 "Focus on error handling"
+  uv run cli/agent_code_reviewer.py --pr 60 --only-path 'core/session/' --only-path 'apps/api/session.ts'
   uv run cli/agent_code_reviewer.py --model grok --pr 60
   uv run cli/agent_code_reviewer.py --reset "Start fresh conversation"
   uv run cli/agent_code_reviewer.py --session abc123 "Scoped to this session"
@@ -998,13 +1001,18 @@ def _path_matches_any(path: str, patterns: list[str]) -> bool:
     return False
 
 
-def filter_diff(diff: str, ignore_paths: list[str]) -> tuple[str, list[str]]:
-    """Drop unified-diff blocks whose file paths match any ignore pattern.
+def filter_diff(
+    diff: str, ignore_paths: list[str], only_paths: list[str] | None = None
+) -> tuple[str, list[str]]:
+    """Drop unified-diff blocks whose file paths match any ignore pattern, or,
+    when `only_paths` is given, that match none of its patterns. Patterns use
+    the same syntax in both lists.
 
     Returns the filtered diff plus the list of paths that were dropped (for
     logging — so users can see what got skipped).
     """
-    if not ignore_paths or not diff:
+    only_paths = only_paths or []
+    if not (ignore_paths or only_paths) or not diff:
         return diff, []
     # Split on file boundaries while keeping each `diff --git` header attached
     # to its own block. The first split element is anything before the first
@@ -1021,11 +1029,27 @@ def filter_diff(diff: str, ignore_paths: list[str]) -> tuple[str, list[str]]:
             kept.append(block)  # malformed — keep so we don't silently drop content
             continue
         path_a, path_b = match.group(1), match.group(2)
-        if _path_matches_any(path_a, ignore_paths) or _path_matches_any(path_b, ignore_paths):
+        ignored = _path_matches_any(path_a, ignore_paths) or _path_matches_any(path_b, ignore_paths)
+        selected = not only_paths or (
+            _path_matches_any(path_a, only_paths) or _path_matches_any(path_b, only_paths)
+        )
+        if ignored or not selected:
             dropped.append(path_b)
             continue
         kept.append(block)
     return "".join(kept), dropped
+
+
+def get_repo_slug() -> str:
+    """`owner_repo` for the checkout `gh` resolves, or "" when it cannot."""
+    result = subprocess.run(
+        ["gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip().replace("/", "_")
 
 
 def get_pr_info(pr_number: str) -> dict:
@@ -1393,10 +1417,30 @@ def format_focus_section(areas: list[FocusArea]) -> str:
     return "\n".join(lines)
 
 
-def write_focus_file(pr_number: str, areas: list[FocusArea], churn: list[tuple[str, int]]) -> Path:
-    """Machine-readable hand-off for the skill, beside the history files."""
-    path = Path(f"/tmp/agent_reviewer_pr{pr_number}_focus.json")
+def focus_file_path(pr_number: str, repo_slug: str) -> Path:
+    """Beside the history files, scoped by repo so PR #68 in two repos cannot collide."""
+    scope = f"{repo_slug}_" if repo_slug else ""
+    return Path(f"/tmp/agent_reviewer_{scope}pr{pr_number}_focus.json")
+
+
+def prune_focus_paths(areas: list[FocusArea], known_paths: set[str]) -> list[FocusArea]:
+    """Drop nominated paths that neither exist in the checkout nor appear in the
+    diff. Reviewers invent plausible directories (`infra/`); a slice built on
+    one would ignore-path its way to an empty diff."""
+    pruned: list[FocusArea] = []
+    for area in areas:
+        paths = [p for p in area.paths if p in known_paths or Path(p).exists()]
+        pruned.append(FocusArea(area.title, area.invariant, paths, area.why))
+    return pruned
+
+
+def write_focus_file(
+    pr_number: str, areas: list[FocusArea], churn: list[tuple[str, int]], repo_slug: str = ""
+) -> Path:
+    """Machine-readable hand-off for the skill."""
+    path = focus_file_path(pr_number, repo_slug)
     payload = {
+        "repo": repo_slug,
         "pr": pr_number,
         "focus_areas": [vars(a) for a in areas],
         "churn": [{"path": p, "lines": n} for p, n in churn],
@@ -1431,9 +1475,15 @@ def review_pr(
     roster: Roster,
     extra_instructions: str = "",
     ignore_paths: list[str] | None = None,
+    only_paths: list[str] | None = None,
     context_files: list[tuple[str, str]] | None = None,
+    whole_pass: bool = True,
 ) -> None:
-    """Full PR review flow: fetch diff → filter ignored paths → size check → review → post."""
+    """Full PR review flow: fetch diff → filter paths → size check → review → post.
+
+    `whole_pass` is False when the caller restricted the diff (a vertical
+    slice). A slice still prints any focus areas it nominates, but does not
+    overwrite the whole pass's focus file, which is the one the skill reads."""
     print(
         f"--> Reviewing PR #{pr_number} with {adapter.entry.name} ({adapter.entry.id})",
         file=sys.stderr,
@@ -1444,10 +1494,10 @@ def review_pr(
         print("PR diff is empty.", file=sys.stderr)
         return
 
-    diff, dropped = filter_diff(diff, ignore_paths or [])
+    diff, dropped = filter_diff(diff, ignore_paths or [], only_paths)
     if dropped:
         print(
-            f"--> Skipped {len(dropped)} file(s) per ignore patterns: "
+            f"--> Skipped {len(dropped)} file(s) per path patterns: "
             + ", ".join(dropped[:5])
             + ("..." if len(dropped) > 5 else ""),
             file=sys.stderr,
@@ -1458,7 +1508,7 @@ def review_pr(
     # comments about content we explicitly meant to skip.
     if not diff.strip():
         print(
-            f"--> Nothing to review: all {len(dropped)} changed file(s) match ignore patterns.",
+            f"--> Nothing to review: all {len(dropped)} changed file(s) excluded by path patterns.",
             file=sys.stderr,
         )
         return
@@ -1491,7 +1541,7 @@ def review_pr(
             f"Roster entries that would take it: {', '.join(fits)} (pass --model)."
             if fits
             else "No roster entry takes it whole: split the PR by vertical "
-            "(one invariant's router + workflow + store together) with --ignore-path, "
+            "(one invariant's router + workflow + store together) with --only-path, "
             "never by layer."
         )
         raise DiffTooLargeError(
@@ -1536,8 +1586,13 @@ def review_pr(
 
     print(f"\n{summary}\n", file=sys.stderr)
     print(f"  {len(comments)} inline comment(s)", file=sys.stderr)
-    focus_path = write_focus_file(pr_number, areas, churn_by_file(diff))
-    print(f"  {len(areas)} focus area(s) for vertical slices -> {focus_path}", file=sys.stderr)
+    churn = churn_by_file(diff)
+    areas = prune_focus_paths(areas, {path for path, _ in churn})
+    if whole_pass:
+        focus_path = write_focus_file(pr_number, areas, churn, get_repo_slug())
+        print(f"  {len(areas)} focus area(s) for vertical slices -> {focus_path}", file=sys.stderr)
+    else:
+        print(f"  {len(areas)} focus area(s) (slice run; focus file left as is)", file=sys.stderr)
     for area in areas:
         print(f"    - {area.title}: {', '.join(area.paths)}", file=sys.stderr)
     summary += format_focus_section(areas)
@@ -1632,6 +1687,18 @@ def main() -> None:
             "patterns match a directory prefix (e.g. 'docs/'); other patterns "
             "use fnmatch globs (e.g. '*.snap'). Repeatable. Combined with the "
             f"hardcoded defaults: {', '.join(DEFAULT_IGNORE_PATHS)}."
+        ),
+    )
+    parser.add_argument(
+        "--only-path",
+        dest="only_paths",
+        action="append",
+        default=[],
+        metavar="PATTERN",
+        help=(
+            "Review only files matching PATTERN (same syntax as --ignore-path). "
+            "Repeatable. The inverse of --ignore-path, for a vertical slice that "
+            "names its handful of files instead of excluding everything else."
         ),
     )
     parser.add_argument("--session", dest="session", default="", help="Session ID to scope history (e.g. a UUID per conversation)")
@@ -1734,7 +1801,9 @@ def main() -> None:
                 roster,
                 args.message,
                 ignore_paths=ignore_paths,
+                only_paths=args.only_paths,
                 context_files=attached,
+                whole_pass=not (args.ignore_paths or args.only_paths),
             )
         except DiffTooLargeError as exc:
             print(f"Error: {exc}", file=sys.stderr)

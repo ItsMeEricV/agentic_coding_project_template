@@ -16,6 +16,7 @@ from agent_code_reviewer import (  # noqa: E402
     REPLY_RESERVE_TOKENS,
     DEFAULT_IGNORE_PATHS,
     ConfigError,
+    FocusArea,
     _build_line_content_index,
     _path_matches_any,
     annotate_diff_with_line_numbers,
@@ -26,6 +27,8 @@ from agent_code_reviewer import (  # noqa: E402
     entries_that_fit,
     filter_catalog,
     filter_diff,
+    focus_file_path,
+    prune_focus_paths,
     format_catalog,
     format_focus_section,
     format_version_report,
@@ -374,6 +377,42 @@ class IgnorePathTests(unittest.TestCase):
         kept, dropped = filter_diff(diff, list(DEFAULT_IGNORE_PATHS))
         self.assertEqual(dropped, ["pnpm-lock.yaml"])
         self.assertIn("src/a.ts", kept)
+
+
+class OnlyPathTests(unittest.TestCase):
+    DIFF = (
+        "diff --git a/core/session/a.ts b/core/session/a.ts\n+a\n"
+        "diff --git a/apps/api/b.ts b/apps/api/b.ts\n+b\n"
+        "diff --git a/core/session/a.test.ts b/core/session/a.test.ts\n+t\n"
+    )
+
+    def test_only_keeps_matching_blocks(self):
+        kept, dropped = filter_diff(self.DIFF, [], ["core/session/"])
+        self.assertIn("core/session/a.ts", kept)
+        self.assertNotIn("apps/api/b.ts", kept)
+        self.assertEqual(dropped, ["apps/api/b.ts"])
+
+    def test_ignore_still_applies_inside_only(self):
+        kept, dropped = filter_diff(self.DIFF, ["*.test.ts"], ["core/session/"])
+        self.assertNotIn("a.test.ts", kept)
+        self.assertEqual(sorted(dropped), ["apps/api/b.ts", "core/session/a.test.ts"])
+
+    def test_no_patterns_is_identity(self):
+        self.assertEqual(filter_diff(self.DIFF, [], []), (self.DIFF, []))
+
+
+class FocusFileTests(unittest.TestCase):
+    def test_path_is_scoped_by_repo(self):
+        self.assertEqual(
+            focus_file_path("68", "acme_werkshop"), Path("/tmp/agent_reviewer_acme_werkshop_pr68_focus.json")
+        )
+        self.assertEqual(focus_file_path("68", ""), Path("/tmp/agent_reviewer_pr68_focus.json"))
+
+    def test_prune_drops_paths_absent_from_diff_and_disk(self):
+        area = FocusArea("t", "inv", ["infra/main.tf", "src/real.ts", "cli/agent_code_reviewer.py"], "why")
+        (pruned,) = prune_focus_paths([area], {"src/real.ts"})
+        self.assertEqual(pruned.paths, ["src/real.ts", "cli/agent_code_reviewer.py"])
+        self.assertEqual((pruned.title, pruned.invariant, pruned.why), ("t", "inv", "why"))
 
 
 class ChurnTests(unittest.TestCase):
