@@ -169,11 +169,20 @@ PR_REVIEW_SYSTEM_PROMPT: str = (
 )
 
 # Diff hunks for these paths are dropped from PR review input. Plans / specs
-# under docs/superpowers are agentic-coding scratch material — committing them
-# is fine for record-keeping, but they're never code-relevant for review and
-# would otherwise waste tokens (and crowd out the real diff).
+# under docs/superpowers are agentic-coding scratch material, and lockfiles are
+# generated: neither is code-relevant for review, and a lockfile alone can be
+# 10K+ tokens that crowd out the real diff.
 DEFAULT_IGNORE_PATHS: list[str] = [
     "docs/superpowers/",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "bun.lockb",
+    "uv.lock",
+    "poetry.lock",
+    "Cargo.lock",
+    "go.sum",
+    "*.snap",
 ]
 
 
@@ -974,9 +983,13 @@ def get_pr_diff(pr_number: str) -> str:
 
 
 def _path_matches_any(path: str, patterns: list[str]) -> bool:
-    """True if `path` matches any of `patterns`. Trailing-slash patterns are
-    treated as directory prefixes; everything else as fnmatch globs."""
+    """True if `path` matches any of `patterns`. A pattern equal to the path
+    matches literally first, so route files like `[...slug]/route.ts` need no
+    escaping; trailing-slash patterns are directory prefixes; the rest are
+    fnmatch globs."""
     for pat in patterns:
+        if pat == path:
+            return True
         if pat.endswith("/"):
             if path.startswith(pat):
                 return True

@@ -14,8 +14,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from agent_code_reviewer import (  # noqa: E402
     DEFAULT_CONTEXT_WINDOW,
     REPLY_RESERVE_TOKENS,
+    DEFAULT_IGNORE_PATHS,
     ConfigError,
     _build_line_content_index,
+    _path_matches_any,
     annotate_diff_with_line_numbers,
     build_pr_prompt,
     check_versions,
@@ -23,6 +25,7 @@ from agent_code_reviewer import (  # noqa: E402
     diff_char_budget,
     entries_that_fit,
     filter_catalog,
+    filter_diff,
     format_catalog,
     format_focus_section,
     format_version_report,
@@ -351,6 +354,26 @@ diff --git a/docs/x.md b/docs/x.md
 -a
 +b
 """
+
+
+class IgnorePathTests(unittest.TestCase):
+    def test_bracketed_route_path_matches_literally(self):
+        path = "app/api/auth/[...nextauth]/route.ts"
+        self.assertTrue(_path_matches_any(path, [path]))
+
+    def test_directory_prefix_and_glob_still_match(self):
+        self.assertTrue(_path_matches_any("docs/a/b.md", ["docs/"]))
+        self.assertTrue(_path_matches_any("x/y.snap", ["*.snap"]))
+        self.assertFalse(_path_matches_any("src/y.ts", ["docs/", "*.snap"]))
+
+    def test_default_ignores_drop_lockfiles_at_any_depth(self):
+        diff = (
+            "diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml\n+x\n"
+            "diff --git a/src/a.ts b/src/a.ts\n+y\n"
+        )
+        kept, dropped = filter_diff(diff, list(DEFAULT_IGNORE_PATHS))
+        self.assertEqual(dropped, ["pnpm-lock.yaml"])
+        self.assertIn("src/a.ts", kept)
 
 
 class ChurnTests(unittest.TestCase):
