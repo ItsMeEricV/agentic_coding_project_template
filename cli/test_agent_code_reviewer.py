@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import sys
 import unittest
+import urllib.error
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -33,6 +34,7 @@ from agent_code_reviewer import (  # noqa: E402
     format_focus_section,
     format_version_report,
     is_prerelease,
+    is_transient,
     load_config,
     make_adapter,
     model_family,
@@ -413,6 +415,58 @@ class FocusFileTests(unittest.TestCase):
         (pruned,) = prune_focus_paths([area], {"src/real.ts"})
         self.assertEqual(pruned.paths, ["src/real.ts", "cli/agent_code_reviewer.py"])
         self.assertEqual((pruned.title, pruned.invariant, pruned.why), ("t", "inv", "why"))
+
+
+class _StatusError(Exception):
+    def __init__(self, status_code: int):
+        super().__init__(f"status {status_code}")
+        self.status_code = status_code
+
+
+class RetryTests(unittest.TestCase):
+    def _adapter(self, outcomes):
+        adapter = make_adapter(load_config().default_entry())
+        calls = []
+
+        def call_api(request_body):
+            calls.append(request_body)
+            outcome = outcomes.pop(0)
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return outcome
+
+        adapter.call_api = call_api
+        return adapter, calls
+
+    def test_classifies_transient_errors(self):
+        http = lambda code: urllib.error.HTTPError("u", code, "m", {}, None)  # noqa: E731
+        self.assertTrue(is_transient(http(429)))
+        self.assertTrue(is_transient(http(503)))
+        self.assertFalse(is_transient(http(401)))
+        self.assertTrue(is_transient(urllib.error.URLError("down")))
+        self.assertTrue(is_transient(TimeoutError()))
+        self.assertTrue(is_transient(_StatusError(429)))
+        self.assertFalse(is_transient(_StatusError(400)))
+        self.assertFalse(is_transient(ValueError("bad json")))
+
+    def test_retries_transient_then_succeeds(self):
+        adapter, calls = self._adapter([_StatusError(429), _StatusError(502), {"ok": True}])
+        slept = []
+        self.assertEqual(adapter.call({"m": 1}, sleep=slept.append), {"ok": True})
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(slept, [2.0, 8.0])
+
+    def test_gives_up_after_backoffs_exhausted(self):
+        adapter, calls = self._adapter([_StatusError(429)] * 3)
+        with self.assertRaises(_StatusError):
+            adapter.call({}, sleep=lambda _s: None)
+        self.assertEqual(len(calls), 3)
+
+    def test_non_transient_fails_immediately(self):
+        adapter, calls = self._adapter([_StatusError(401), {"never": True}])
+        with self.assertRaises(_StatusError):
+            adapter.call({}, sleep=lambda _s: None)
+        self.assertEqual(len(calls), 1)
 
 
 class ChurnTests(unittest.TestCase):

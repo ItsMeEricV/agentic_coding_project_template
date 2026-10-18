@@ -110,6 +110,7 @@ import tomllib
 import urllib.error
 import urllib.request
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -118,6 +119,12 @@ from pathlib import Path
 CONFIG_PATH: Path = Path(__file__).resolve().parent / "agent_reviewer.toml"
 
 DEFAULT_TTL_MINUTES: int = 30
+
+# A model call is retried on 429, 5xx, and timeouts: one backoff per retry,
+# so len(RETRY_BACKOFF_SECONDS) + 1 attempts in all. Anything else (4xx, bad
+# JSON, auth) fails on the first attempt.
+RETRY_BACKOFF_SECONDS: tuple[float, ...] = (2.0, 8.0)
+RETRYABLE_STATUS: frozenset[int] = frozenset({408, 429, 500, 502, 503, 504})
 
 DEFAULT_SYSTEM_PROMPT: str = (
     "You are a staff-level software architect reviewing code and designs. "
@@ -654,10 +661,40 @@ class Adapter(ABC):
     @abstractmethod
     def call_api(self, request_body: dict) -> dict: ...
 
+    def call(self, request_body: dict, sleep: Callable[[float], None] = time.sleep) -> dict:
+        """`call_api` with a bounded retry on transient failures."""
+        for attempt, backoff in enumerate(RETRY_BACKOFF_SECONDS, start=1):
+            try:
+                return self.call_api(request_body)
+            except Exception as exc:
+                if not is_transient(exc):
+                    raise
+                print(
+                    f"--> {type(exc).__name__} from {self.entry.key} "
+                    f"(attempt {attempt}/{len(RETRY_BACKOFF_SECONDS) + 1}); "
+                    f"retrying in {backoff:g}s",
+                    file=sys.stderr,
+                )
+                sleep(backoff)
+        return self.call_api(request_body)
+
     @abstractmethod
     def extract_response(self, data: dict) -> tuple[str, str]:
         """Returns (visible_text, opaque_signature). Signature is access-method
         specific and threaded back into the next turn's history record."""
+
+
+def is_transient(exc: BaseException) -> bool:
+    """429, 5xx, or a timeout, from urllib or from an SDK that exposes
+    `status_code`. Duck-typed so the OpenRouter SDK need not be importable."""
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in RETRYABLE_STATUS
+    if isinstance(exc, (urllib.error.URLError, TimeoutError)):
+        return True
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        return status in RETRYABLE_STATUS
+    return "Timeout" in type(exc).__name__
 
     # Shared history-file ops. The on-disk shape is the same everywhere
     # (entries list + session + per-entry timestamps); only the per-entry
@@ -1561,7 +1598,7 @@ def review_pr(
     history: list[dict] = []
     history = adapter.add_message(history, "user", prompt)
     request_body = adapter.build_request(PR_REVIEW_SYSTEM_PROMPT, history)
-    response_data = adapter.call_api(request_body)
+    response_data = adapter.call(request_body)
     text, _ = adapter.extract_response(response_data)
 
     # Parse JSON response
@@ -1863,7 +1900,7 @@ def main() -> None:
 
     # API call
     request_body = adapter.build_request(system_prompt, history)
-    response_data = adapter.call_api(request_body)
+    response_data = adapter.call(request_body)
 
     # Parse response
     text, signature = adapter.extract_response(response_data)
