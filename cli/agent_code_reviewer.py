@@ -53,8 +53,10 @@ PR Review Mode (--pr):
   enforce it. They go in the review body and, with per-file churn, into
   /tmp/agent_reviewer_<owner>_<repo>_pr<N>_focus.json for the skill to turn
   into vertical slices (`--only-path` to the area's files, `--file` for its
-  sibling interfaces). A run with --only-path or --ignore-path is a slice and
-  leaves that file alone.
+  sibling interfaces). A run with --only-path or --ignore-path is a slice: it
+  leaves that file's nominations alone and is admitted only if the whole pass
+  recorded there nominated an area or ran over 150K tokens, judged the same
+  PR head, and has had fewer than three slices since (exit 4 otherwise).
 
 Conversation History:
   - One file per roster entry: /tmp/agent_reviewer_<key>.json
@@ -98,6 +100,9 @@ Exit codes:
      a key that does not exist
   3  --pr diff does not fit the selected model's context window; the message
      names the roster entries that would take it
+  4  a slice run (--only-path / --ignore-path) the whole-diff pass did not
+     earn: no pass yet, PR head moved, no nomination under 150K tokens, or
+     three slices already ran
 """
 
 from __future__ import annotations
@@ -253,7 +258,18 @@ class DiffTooLargeError(Exception):
     """A --pr diff that overflows the selected entry's window. main() exits 3."""
 
 
+class SliceGateError(Exception):
+    """A slice run the whole pass did not earn. main() exits 4."""
+
+
 MAX_FOCUS_AREAS: int = 3
+
+# A slice (a --pr run with --only-path or --ignore-path) is a second read of
+# code the whole pass already covered. The script lets one run only when that
+# pass nominated a focus area or was itself large enough that attention per
+# line was the problem, and never more than MAX_SLICE_RUNS per whole pass.
+SLICE_GATE_TOKENS: int = 150_000
+MAX_SLICE_RUNS: int = 3
 
 
 @dataclass(frozen=True)
@@ -1521,18 +1537,66 @@ def prune_focus_paths(areas: list[FocusArea], known_paths: set[str]) -> list[Foc
 
 
 def write_focus_file(
-    pr_number: str, areas: list[FocusArea], churn: list[tuple[str, int]], repo_slug: str = ""
+    pr_number: str,
+    areas: list[FocusArea],
+    churn: list[tuple[str, int]],
+    repo_slug: str = "",
+    head: str = "",
+    diff_tokens: int = 0,
 ) -> Path:
-    """Machine-readable hand-off for the skill."""
+    """Machine-readable hand-off for the skill, and the slice gate's record of
+    the whole pass: which head it judged, how large it was, and which slices
+    have run since."""
     path = focus_file_path(pr_number, repo_slug)
     payload = {
         "repo": repo_slug,
         "pr": pr_number,
+        "head": head,
+        "diff_tokens": diff_tokens,
         "focus_areas": [vars(a) for a in areas],
         "churn": [{"path": p, "lines": n} for p, n in churn],
+        "slices": [],
     }
     path.write_text(json.dumps(payload, indent=2) + "\n")
     return path
+
+
+def slice_gate_reason(focus: dict | None, head: str) -> str | None:
+    """Why a slice may not run against this whole-pass record, or None if it may."""
+    if focus is None:
+        return "no whole-diff pass has run for this PR; run --pr without path filters first"
+    if focus.get("head") and head and focus["head"] != head:
+        return (
+            f"the whole-diff pass judged {focus['head'][:7]} but the PR is now at "
+            f"{head[:7]}; run it again before slicing"
+        )
+    slices = focus.get("slices") or []
+    if len(slices) >= MAX_SLICE_RUNS:
+        return f"{MAX_SLICE_RUNS} slices have already run against this whole pass"
+    if focus.get("focus_areas"):
+        return None
+    tokens = int(focus.get("diff_tokens") or 0)
+    if tokens >= SLICE_GATE_TOKENS:
+        return None
+    return (
+        f"the whole-diff pass (~{tokens:,} tokens, under {SLICE_GATE_TOKENS:,}) nominated "
+        "no focus area, so there is nothing a second read would settle"
+    )
+
+
+def load_focus_file(path: Path) -> dict | None:
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def record_slice(path: Path, focus: dict, description: str) -> None:
+    focus.setdefault("slices", []).append(description)
+    path.write_text(json.dumps(focus, indent=2) + "\n")
 
 
 def build_pr_prompt(
@@ -1609,6 +1673,19 @@ def review_pr(
     pr_info = get_pr_info(pr_number)
     pr_title = pr_info.get("title", "").strip()
     pr_body = pr_info.get("body", "").strip()
+    head = pr_info.get("headRefOid", "")
+    repo_slug = get_repo_slug()
+    focus_path = focus_file_path(pr_number, repo_slug)
+    diff_tokens = len(annotated_diff) // CHARS_PER_TOKEN
+
+    # A slice runs only when the whole pass earned it. Checked before the
+    # size check so a refused slice costs nothing, not even a token estimate.
+    focus: dict | None = None
+    if not whole_pass:
+        focus = load_focus_file(focus_path)
+        reason = slice_gate_reason(focus, head)
+        if reason:
+            raise SliceGateError(f"slice refused: {reason}.")
     context_block = ""
     if pr_title or pr_body:
         context_block = (
@@ -1632,14 +1709,18 @@ def review_pr(
             "(one invariant's router + workflow + store together) with --only-path, "
             "never by layer."
         )
+        if whole_pass:
+            # Record the refused whole pass so the slices it sends you to
+            # clear the gate: a diff no roster entry takes is over the size
+            # threshold by definition.
+            write_focus_file(pr_number, [], churn_by_file(diff), repo_slug, head, diff_tokens)
         raise DiffTooLargeError(
-            f"diff is ~{len(annotated_diff) // CHARS_PER_TOKEN:,} tokens after annotation; "
+            f"diff is ~{diff_tokens:,} tokens after annotation; "
             f"{entry.key} ({_compact_count(entry.context_window)} window) has room for "
             f"~{budget // CHARS_PER_TOKEN:,} beside the prompt. {hint}"
         )
     print(
-        f"--> Diff ~{len(annotated_diff) // CHARS_PER_TOKEN:,} tokens of "
-        f"~{budget // CHARS_PER_TOKEN:,} available on {entry.key}",
+        f"--> Diff ~{diff_tokens:,} tokens of ~{budget // CHARS_PER_TOKEN:,} available on {entry.key}",
         file=sys.stderr,
     )
 
@@ -1678,10 +1759,17 @@ def review_pr(
     churn = churn_by_file(diff)
     areas = prune_focus_paths(areas, {path for path, _ in churn})
     if whole_pass:
-        focus_path = write_focus_file(pr_number, areas, churn, get_repo_slug())
+        write_focus_file(pr_number, areas, churn, repo_slug, head, diff_tokens)
         print(f"  {len(areas)} focus area(s) for vertical slices -> {focus_path}", file=sys.stderr)
     else:
-        print(f"  {len(areas)} focus area(s) (slice run; focus file left as is)", file=sys.stderr)
+        assert focus is not None  # the gate loaded it
+        only = ", ".join(only_paths or []) or "(none)"
+        record_slice(focus_path, focus, f"only={only}; ignore={len(ignore_paths or [])}; {extra_instructions[:80]}")
+        used = len(focus["slices"])
+        print(
+            f"  slice {used}/{MAX_SLICE_RUNS} recorded; {len(areas)} focus area(s) printed, file kept",
+            file=sys.stderr,
+        )
     for area in areas:
         print(f"    - {area.title}: {', '.join(area.paths)}", file=sys.stderr)
     summary += format_focus_section(areas)
@@ -1912,6 +2000,9 @@ def main() -> None:
         except DiffTooLargeError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             sys.exit(3)
+        except SliceGateError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(4)
         return
 
     # --reset combined with a message: reset first, then proceed to send.

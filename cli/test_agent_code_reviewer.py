@@ -16,6 +16,8 @@ from agent_code_reviewer import (  # noqa: E402
     DEFAULT_CONTEXT_WINDOW,
     REPLY_RESERVE_TOKENS,
     DEFAULT_IGNORE_PATHS,
+    MAX_SLICE_RUNS,
+    SLICE_GATE_TOKENS,
     ConfigError,
     FocusArea,
     _build_line_content_index,
@@ -31,6 +33,7 @@ from agent_code_reviewer import (  # noqa: E402
     filter_diff,
     focus_file_path,
     prune_focus_paths,
+    slice_gate_reason,
     format_catalog,
     format_focus_section,
     format_version_report,
@@ -483,6 +486,33 @@ class DedupeTests(unittest.TestCase):
     def test_empty_posted_set_is_identity(self):
         comments = [{"path": "a.ts", "line": 1, "body": "x"}]
         self.assertEqual(drop_already_posted(comments, set()), comments)
+
+
+class SliceGateTests(unittest.TestCase):
+    NOMINATED = {"head": "abc1234", "diff_tokens": 40_000, "focus_areas": [{"title": "t"}], "slices": []}
+    QUIET_SMALL = {"head": "abc1234", "diff_tokens": 40_000, "focus_areas": [], "slices": []}
+    QUIET_LARGE = {"head": "abc1234", "diff_tokens": SLICE_GATE_TOKENS, "focus_areas": [], "slices": []}
+
+    def test_no_whole_pass_refuses(self):
+        self.assertIn("no whole-diff pass", slice_gate_reason(None, "abc1234"))
+
+    def test_nomination_admits(self):
+        self.assertIsNone(slice_gate_reason(self.NOMINATED, "abc1234"))
+
+    def test_quiet_small_pass_refuses(self):
+        self.assertIn("nominated no focus area", slice_gate_reason(self.QUIET_SMALL, "abc1234"))
+
+    def test_quiet_large_pass_admits(self):
+        self.assertIsNone(slice_gate_reason(self.QUIET_LARGE, "abc1234"))
+
+    def test_moved_head_refuses(self):
+        self.assertIn("PR is now at", slice_gate_reason(self.NOMINATED, "fff9999"))
+
+    def test_cap_refuses_fourth_slice(self):
+        full = {**self.NOMINATED, "slices": ["s"] * MAX_SLICE_RUNS}
+        self.assertIn("already run", slice_gate_reason(full, "abc1234"))
+        almost = {**self.NOMINATED, "slices": ["s"] * (MAX_SLICE_RUNS - 1)}
+        self.assertIsNone(slice_gate_reason(almost, "abc1234"))
 
 
 class ChurnTests(unittest.TestCase):
