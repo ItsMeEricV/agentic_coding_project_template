@@ -75,10 +75,10 @@ tag = "OPUS"
 
 [[models]]
 key = "grok"
-name = "Grok 4.20 — OpenRouter"
+name = "Grok 4.7 — OpenRouter"
 access_method = "openrouter"
-id = "x-ai/grok-4.20"
-context_window = 2_000_000
+id = "x-ai/grok-4.7"
+context_window = 500_000
 
 [[models]]
 key = "glm"
