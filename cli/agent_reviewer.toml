@@ -65,9 +65,9 @@ tag = "GEMINI"
 # different family unless you specifically want Claude's read.
 [[models]]
 key = "opus"
-name = "Claude Opus 5 — OpenRouter"
+name = "Claude Opus 5.5 — OpenRouter"
 access_method = "openrouter"
-id = "anthropic/claude-opus-5"
+id = "anthropic/claude-opus-5.5"
 context_window = 1_000_000
 # Not "CLAUDE": AGENTS.md reserves **[CLAUDE]** for the authoring agent's own
 # PR comments, and a reviewer posting under it would be indistinguishable.
