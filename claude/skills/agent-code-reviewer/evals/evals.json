@@ -41,6 +41,35 @@
         "result.md offers a concrete alternative (delegation skill or Claude writes then reviewer reviews)",
         "No files under the repo were modified"
       ]
+    },
+    {
+      "id": 3,
+      "name": "large-pr-focus-areas",
+      "prompt": "Get a second-opinion review of PR #50 in this repo using the agent code reviewer. Constraint for this test: use --dry-run on every reviewer call so nothing is posted to GitHub, and do not modify any repo files. Save every reviewer call's raw JSON to the output directory (review-1.json, review-2.json, ...) and write takeaways.md with your per-finding verdicts plus every decision you made about whether to run any follow-up pass, and why.",
+      "expected_output": "One whole-diff dry-run; if focus areas are nominated, each is accepted or declined with a reason; any slice has a justification line and runs vertically.",
+      "files": [],
+      "assertions": [
+        "First reviewer call is a whole-diff --pr 50 --dry-run with no --only-path/--ignore-path",
+        "If the whole pass reported focus areas, the agent read the slice guidance (new: references/vertical-slices.md; old: SKILL.md slice section) before deciding",
+        "Every slice that ran has a one-line justification naming the invariant, why the whole pass could not settle it, and its source",
+        "No slice ran by layer (each --only-path set spans the files one invariant needs, not one package)",
+        "At most three slices, all with --dry-run",
+        "Any focus area declined is declined with a stated reason"
+      ]
+    },
+    {
+      "id": 4,
+      "name": "focus-area-followup",
+      "prompt": "You just ran the whole-diff second-opinion pass on PR #50 (dry-run). Its stdout JSON and stderr are in the inputs directory, and the script wrote its focus file to /tmp. Decide what, if anything, to run next, then write followup.md with your decisions and reasons. Any further reviewer call must use --dry-run.",
+      "expected_output": "Reads the slice guidance because focus areas were reported, then declines or justifies each slice; on a ~17K-token diff both nominations are declined.",
+      "files": ["inputs/review-1.json", "inputs/review-1.stderr.txt"],
+      "assertions": [
+        "Reads the slice guidance before deciding (new: references/vertical-slices.md; old: the SKILL.md slice section)",
+        "Each nominated focus area gets an explicit accept or decline with a reason",
+        "Every slice that runs has a one-line justification naming the invariant, why the whole pass could not settle it, and its source",
+        "No slice runs by layer, at most three, all --dry-run",
+        "Fewer than 10 shell commands"
+      ]
     }
   ]
 }
