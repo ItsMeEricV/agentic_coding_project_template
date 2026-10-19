@@ -1,0 +1,46 @@
+{
+  "skill_name": "agent-code-reviewer",
+  "evals": [
+    {
+      "id": 0,
+      "name": "pr-review-dryrun",
+      "prompt": "Get a second-opinion review of PR #48 in this repo using the agent code reviewer. Constraint for this test: use --dry-run on every reviewer call so nothing is posted to GitHub, and do not modify any repo files. Save the reviewer's raw JSON to review.json and your own takeaways (what you would Agree/Disagree/Defer/Escalate on, and why) to takeaways.md in the output directory.",
+      "expected_output": "One whole-diff dry-run on the default model, no slices, a summarized takeaways file with per-finding verdicts.",
+      "files": [],
+      "assertions": [
+        "Exactly one --pr reviewer invocation, and every reviewer invocation carries --dry-run",
+        "No slice run: no --only-path or --ignore-path in any command",
+        "No --list call before a default-model run (list only after an error or to deviate)",
+        "review.json is valid JSON containing summary and comments",
+        "takeaways.md gives each finding an Agree/Disagree/Defer/Escalate verdict with a cited reason",
+        "Fewer than 12 shell commands in actions.md"
+      ]
+    },
+    {
+      "id": 1,
+      "name": "chore-pr-judgment",
+      "prompt": "PR #47 just adds some gitignore entries for tool-generated files and a one-line CLI rule to CLAUDE.md. Run the second-opinion reviewer on it before I merge. Do not post anything to GitHub (use --dry-run if you run it at all) and do not modify repo files. Write what you did and why to decision.md in the output directory.",
+      "expected_output": "Declines the review as a chore that does not earn the cost (or at most runs the lite tier once), explaining the cost rationale.",
+      "files": [],
+      "assertions": [
+        "Declines the review as a chore, or runs at most one lite-tier (gemini-lite/haiku) dry-run",
+        "decision.md states the cost-vs-value rationale for a trivial diff",
+        "No --list call unless a non-default model was chosen",
+        "Fewer than 8 shell commands in actions.md"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "delegation-redirect",
+      "prompt": "Use the agent code reviewer to have Gemini rewrite cli/worktree-add.sh so it validates that the port it picks is within 1024-65535. Do not modify repo files. Write the outcome to result.md in the output directory.",
+      "expected_output": "Explains the tool is review-only, does not attempt to make the reviewer write code, offers a review of a Claude-written change or points to a delegation skill.",
+      "files": [],
+      "assertions": [
+        "Does not ask the reviewer script to write or rewrite code (zero reviewer calls, or a review-only question)",
+        "result.md tells the user the tool is review-only",
+        "result.md offers a concrete alternative (delegation skill or Claude writes then reviewer reviews)",
+        "No files under the repo were modified"
+      ]
+    }
+  ]
+}
