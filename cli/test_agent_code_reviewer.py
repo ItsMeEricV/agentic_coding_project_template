@@ -6,6 +6,7 @@ Run with: python3 -m unittest cli.test_agent_code_reviewer -v
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 import urllib.error
 from email.message import Message
@@ -21,6 +22,7 @@ from agent_code_reviewer import (  # noqa: E402
     SLICE_GATE_TOKENS,
     ConfigError,
     FocusArea,
+    FocusRecord,
     _build_line_content_index,
     _path_matches_any,
     annotate_diff_with_line_numbers,
@@ -35,6 +37,7 @@ from agent_code_reviewer import (  # noqa: E402
     focus_file_path,
     prune_focus_paths,
     slice_gate_reason,
+    write_focus_file,
     VersionReport,
     format_catalog,
     format_focus_section,
@@ -42,6 +45,7 @@ from agent_code_reviewer import (  # noqa: E402
     is_prerelease,
     is_transient,
     load_config,
+    load_focus_file,
     make_adapter,
     model_family,
     parse_config,
@@ -427,6 +431,26 @@ class FocusFileTests(unittest.TestCase):
         self.assertEqual(pruned.paths, ["src/real.ts", "cli/agent_code_reviewer.py"])
         self.assertEqual((pruned.title, pruned.invariant, pruned.why), ("t", "inv", "why"))
 
+    def test_written_record_loads_back(self):
+        areas = [FocusArea(title="t", invariant="i", paths=["a.py"], why="")]
+        path = write_focus_file("7", areas, [("a.py", 3)], "o_r", "abc1234", 40_000)
+        try:
+            focus = load_focus_file(path)
+        finally:
+            path.unlink()
+        assert focus is not None
+        self.assertEqual(focus["head"], "abc1234")
+        self.assertEqual(focus["churn"], [{"path": "a.py", "lines": 3}])
+        self.assertEqual(focus["slices"], [])
+
+    def test_malformed_record_is_no_record(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "focus.json"
+            for body in ("not json", "[]", '{"head": 1}', '{"head": "x", "diff_tokens": 1}'):
+                path.write_text(body)
+                self.assertIsNone(load_focus_file(path), body)
+            self.assertIsNone(load_focus_file(Path(d) / "missing.json"))
+
 
 class _StatusError(Exception):
     def __init__(self, status_code: int):
@@ -515,15 +539,29 @@ class DedupeTests(unittest.TestCase):
         self.assertEqual(drop_already_posted(comments, set()), comments)
 
 
+def _focus(
+    *, focus_areas: list[dict] | None = None, slices: int = 0, diff_tokens: int = 40_000
+) -> FocusRecord:
+    return FocusRecord(
+        repo="o/r",
+        pr="1",
+        head="abc1234",
+        diff_tokens=diff_tokens,
+        focus_areas=focus_areas or [],
+        churn=[],
+        slices=["s"] * slices,
+    )
+
+
 class SliceGateTests(unittest.TestCase):
-    def _refusal(self, focus, head) -> str:
+    def _refusal(self, focus: FocusRecord | None, head: str) -> str:
         reason = slice_gate_reason(focus, head)
         assert reason is not None
         return reason
 
-    NOMINATED = {"head": "abc1234", "diff_tokens": 40_000, "focus_areas": [{"title": "t"}], "slices": []}
-    QUIET_SMALL = {"head": "abc1234", "diff_tokens": 40_000, "focus_areas": [], "slices": []}
-    QUIET_LARGE = {"head": "abc1234", "diff_tokens": SLICE_GATE_TOKENS, "focus_areas": [], "slices": []}
+    NOMINATED = _focus(focus_areas=[{"title": "t"}])
+    QUIET_SMALL = _focus()
+    QUIET_LARGE = _focus(diff_tokens=SLICE_GATE_TOKENS)
 
     def test_no_whole_pass_refuses(self):
         self.assertIn("no whole-diff pass", self._refusal(None, "abc1234"))
@@ -541,9 +579,9 @@ class SliceGateTests(unittest.TestCase):
         self.assertIn("PR is now at", self._refusal(self.NOMINATED, "fff9999"))
 
     def test_cap_refuses_fourth_slice(self):
-        full = {**self.NOMINATED, "slices": ["s"] * MAX_SLICE_RUNS}
+        full = _focus(focus_areas=[{"title": "t"}], slices=MAX_SLICE_RUNS)
         self.assertIn("already run", self._refusal(full, "abc1234"))
-        almost = {**self.NOMINATED, "slices": ["s"] * (MAX_SLICE_RUNS - 1)}
+        almost = _focus(focus_areas=[{"title": "t"}], slices=MAX_SLICE_RUNS - 1)
         self.assertIsNone(slice_gate_reason(almost, "abc1234"))
 
 

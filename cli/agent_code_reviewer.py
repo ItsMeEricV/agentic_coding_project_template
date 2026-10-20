@@ -122,6 +122,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Literal, TypedDict, get_args
 
 # --- Config ---
 
@@ -218,7 +219,8 @@ DEFAULT_IGNORE_PATHS: list[str] = [
 # and inferring it from the model id would break the first time a vendor
 # renames a family.
 
-ACCESS_METHODS: tuple[str, ...] = ("openrouter", "gemini_api", "openai_api")
+AccessMethod = Literal["openrouter", "gemini_api", "openai_api"]
+ACCESS_METHODS: tuple[AccessMethod, ...] = get_args(AccessMethod)
 
 REQUIRED_FIELDS: tuple[str, ...] = ("key", "name", "access_method", "id")
 OPTIONAL_FIELDS: tuple[str, ...] = ("tag", "store", "context_window")
@@ -236,6 +238,11 @@ CHARS_PER_TOKEN: int = 4
 # draw dozens of comments, each with a verbatim code excerpt.
 REPLY_RESERVE_TOKENS: int = 32_000
 
+# String-keyed JSON whose shape is owned by a remote API or the model. Typed
+# loosely on purpose: the runtime isinstance checks at each parse site are the
+# real validation, and a TypedDict here would promise more than they verify.
+JsonDict = dict[str, Any]
+
 
 class ConfigError(Exception):
     """Roster missing, unreadable, or invalid. main() exits 2 on these."""
@@ -247,7 +254,7 @@ class ModelEntry:
 
     key: str
     name: str
-    access_method: str
+    access_method: AccessMethod
     id: str
     tag: str
     store: bool = False
@@ -270,6 +277,23 @@ MAX_FOCUS_AREAS: int = 3
 # line was the problem, and never more than MAX_SLICE_RUNS per whole pass.
 SLICE_GATE_TOKENS: int = 150_000
 MAX_SLICE_RUNS: int = 3
+
+
+class ChurnEntry(TypedDict):
+    path: str
+    lines: int
+
+
+class FocusRecord(TypedDict):
+    """On-disk record of a whole-diff pass; the slice gate reads it back."""
+
+    repo: str
+    pr: str
+    head: str
+    diff_tokens: int
+    focus_areas: list[JsonDict]
+    churn: list[ChurnEntry]
+    slices: list[str]
 
 
 @dataclass(frozen=True)
@@ -298,7 +322,7 @@ class Roster:
         return self.get(self.default_key)
 
 
-def parse_config(raw: dict) -> Roster:
+def parse_config(raw: JsonDict) -> Roster:
     """Validate a parsed roster. Pure — takes the toml dict, not a path.
 
     Strict on purpose: this file is hand-edited, and a silently-ignored typo
@@ -458,7 +482,7 @@ class CatalogModel:
         return (bool(self.alias_target), self.is_batch, self.id)
 
 
-def parse_openrouter_catalog(payload: dict) -> list[CatalogModel]:
+def parse_openrouter_catalog(payload: JsonDict) -> list[CatalogModel]:
     """Reduce an OpenRouter /models response to CatalogModels. Pure."""
     models = []
     for raw in payload.get("data", []):
@@ -643,7 +667,7 @@ def _compact_count(value: int) -> str:
     return str(value)
 
 
-def fetch_openrouter_catalog(url: str = OPENROUTER_CATALOG_URL) -> dict:
+def fetch_openrouter_catalog(url: str = OPENROUTER_CATALOG_URL) -> JsonDict:
     """Fetch the public catalog. No auth — deliberately usable key-less."""
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
     with urllib.request.urlopen(req, timeout=30) as resp:
@@ -688,16 +712,16 @@ class Adapter(ABC):
 
     @abstractmethod
     def add_message(
-        self, history: list[dict], role: str, text: str, signature: str = ""
-    ) -> list[dict]: ...
+        self, history: list[JsonDict], role: str, text: str, signature: str = ""
+    ) -> list[JsonDict]: ...
 
     @abstractmethod
-    def build_request(self, system_prompt: str, history: list[dict]) -> dict: ...
+    def build_request(self, system_prompt: str, history: list[JsonDict]) -> JsonDict: ...
 
     @abstractmethod
-    def call_api(self, request_body: dict) -> dict: ...
+    def call_api(self, request_body: JsonDict) -> JsonDict: ...
 
-    def call(self, request_body: dict, sleep: Callable[[float], None] = time.sleep) -> dict:
+    def call(self, request_body: JsonDict, sleep: Callable[[float], None] = time.sleep) -> JsonDict:
         """`call_api` with a bounded retry on transient failures."""
         for attempt, backoff in enumerate(RETRY_BACKOFF_SECONDS, start=1):
             try:
@@ -715,7 +739,7 @@ class Adapter(ABC):
         return self.call_api(request_body)
 
     @abstractmethod
-    def extract_response(self, data: dict) -> tuple[str, str]:
+    def extract_response(self, data: JsonDict) -> tuple[str, str]:
         """Returns (visible_text, opaque_signature). Signature is access-method
         specific and threaded back into the next turn's history record."""
 
@@ -727,7 +751,7 @@ class Adapter(ABC):
     def history_file(self) -> Path:
         return Path(f"/tmp/agent_reviewer_{self.entry.key}.json")
 
-    def load_history_raw(self) -> dict:
+    def load_history_raw(self) -> JsonDict:
         hf = self.history_file()
         if hf.exists():
             try:
@@ -738,7 +762,7 @@ class Adapter(ABC):
 
     def load_history(
         self, session: str | None = None, ttl_minutes: int = DEFAULT_TTL_MINUTES
-    ) -> list[dict]:
+    ) -> list[JsonDict]:
         raw = self.load_history_raw()
         # Clear on any session mismatch, including the case where the caller
         # omits --session but the saved history was scoped to one. Without
@@ -746,7 +770,7 @@ class Adapter(ABC):
         # silently replay into the next un-scoped call and leak back out.
         if raw.get("session") != session:
             return []
-        entries: list[dict] = raw.get("entries", [])
+        entries: list[JsonDict] = raw.get("entries", [])
         if ttl_minutes > 0:
             cutoff = time.time() - (ttl_minutes * 60)
             entries = [e for e in entries if e.get("timestamp", 0) >= cutoff]
@@ -754,7 +778,7 @@ class Adapter(ABC):
 
     def save_history(
         self,
-        history_messages: list[dict],
+        history_messages: list[JsonDict],
         session: str | None = None,
         timestamps: list[float] | None = None,
     ) -> None:
@@ -763,7 +787,7 @@ class Adapter(ABC):
         for i, msg in enumerate(history_messages):
             ts = timestamps[i] if timestamps and i < len(timestamps) else now
             entries.append({"timestamp": ts, "message": msg})
-        data: dict = {"entries": entries}
+        data: JsonDict = {"entries": entries}
         if session:
             data["session"] = session
         self.history_file().write_text(json.dumps(data))
@@ -782,21 +806,21 @@ class GeminiAdapter(Adapter):
         return "GEMINI_API_KEY"
 
     def add_message(
-        self, history: list[dict], role: str, text: str, signature: str = ""
-    ) -> list[dict]:
-        part: dict = {"text": text}
+        self, history: list[JsonDict], role: str, text: str, signature: str = ""
+    ) -> list[JsonDict]:
+        part: JsonDict = {"text": text}
         if signature:
             part["thoughtSignature"] = signature
         history.append({"role": role, "parts": [part]})
         return history
 
-    def build_request(self, system_prompt: str, history: list[dict]) -> dict:
+    def build_request(self, system_prompt: str, history: list[JsonDict]) -> JsonDict:
         return {
             "system_instruction": {"parts": [{"text": system_prompt}]},
             "contents": history,
         }
 
-    def call_api(self, request_body: dict) -> dict:
+    def call_api(self, request_body: JsonDict) -> JsonDict:
         key = self.api_key()
         url = (
             f"https://generativelanguage.googleapis.com/v1beta/models/{self.entry.id}"
@@ -809,7 +833,7 @@ class GeminiAdapter(Adapter):
         with urllib.request.urlopen(req, timeout=300) as resp:
             return json.loads(resp.read())
 
-    def extract_response(self, data: dict) -> tuple[str, str]:
+    def extract_response(self, data: JsonDict) -> tuple[str, str]:
         if data.get("error"):
             msg = data["error"].get("message", "unknown error")
             print(f"API Error: {msg[:200]}", file=sys.stderr)
@@ -852,7 +876,7 @@ class OpenAIAdapter(Adapter):
 
     def load_history(
         self, session: str | None = None, ttl_minutes: int = DEFAULT_TTL_MINUTES
-    ) -> list[dict]:
+    ) -> list[JsonDict]:
         # Side effect: capture the most recent assistant message's response_id
         # so build_request() can pass it as previous_response_id. main() uses
         # the Gemini-flavored role name "model" for assistant turns, so accept
@@ -866,18 +890,18 @@ class OpenAIAdapter(Adapter):
         return history
 
     def add_message(
-        self, history: list[dict], role: str, text: str, signature: str = ""
-    ) -> list[dict]:
+        self, history: list[JsonDict], role: str, text: str, signature: str = ""
+    ) -> list[JsonDict]:
         # OpenAI's message shape is {role, content[]}, but we only persist the
         # bits we need: role, visible text, and (for assistant messages) the
         # response id we'll thread into the next turn's previous_response_id.
-        msg: dict = {"role": role, "text": text}
+        msg: JsonDict = {"role": role, "text": text}
         if signature:
             msg["response_id"] = signature
         history.append(msg)
         return history
 
-    def build_request(self, system_prompt: str, history: list[dict]) -> dict:
+    def build_request(self, system_prompt: str, history: list[JsonDict]) -> JsonDict:
         # Two modes:
         #
         # 1. Stateless (default, store = false): replay the full local history
@@ -890,7 +914,7 @@ class OpenAIAdapter(Adapter):
         #    retained. Cheaper per-turn (no transcript re-send) at the cost
         #    of server-side retention of all prior payloads.
         store = self.entry.store
-        body: dict = {
+        body: JsonDict = {
             "instructions": system_prompt,
             "store": store,
         }
@@ -916,7 +940,7 @@ class OpenAIAdapter(Adapter):
             ]
         return body
 
-    def call_api(self, request_body: dict) -> dict:
+    def call_api(self, request_body: JsonDict) -> JsonDict:
         key = self.api_key()
         url = "https://api.openai.com/v1/responses"
         body = dict(request_body)
@@ -933,7 +957,7 @@ class OpenAIAdapter(Adapter):
         with urllib.request.urlopen(req, timeout=300) as resp:
             return json.loads(resp.read())
 
-    def extract_response(self, data: dict) -> tuple[str, str]:
+    def extract_response(self, data: JsonDict) -> tuple[str, str]:
         # OpenAI returns `"error": null` on success; only treat truthy as a failure.
         if data.get("error"):
             msg = data["error"].get("message", "unknown error")
@@ -966,12 +990,12 @@ class OpenRouterAdapter(Adapter):
         return "OPENROUTER_API_KEY"
 
     def add_message(
-        self, history: list[dict], role: str, text: str, signature: str = ""
-    ) -> list[dict]:
+        self, history: list[JsonDict], role: str, text: str, signature: str = ""
+    ) -> list[JsonDict]:
         history.append({"role": role, "text": text})
         return history
 
-    def build_request(self, system_prompt: str, history: list[dict]) -> dict:
+    def build_request(self, system_prompt: str, history: list[JsonDict]) -> JsonDict:
         def to_chat_role(role: str) -> str:
             return "assistant" if role == "model" else role
 
@@ -983,7 +1007,7 @@ class OpenRouterAdapter(Adapter):
         ]
         return {"messages": messages}
 
-    def call_api(self, request_body: dict) -> dict:
+    def call_api(self, request_body: JsonDict) -> JsonDict:
         # Deferred import: the SDK is declared in this script's PEP 723 header,
         # but the two direct adapters must keep working under a bare `python3`
         # with nothing installed.
@@ -1005,11 +1029,11 @@ class OpenRouterAdapter(Adapter):
             )
         return {"text": response.choices[0].message.content or ""}
 
-    def extract_response(self, data: dict) -> tuple[str, str]:
+    def extract_response(self, data: JsonDict) -> tuple[str, str]:
         return data.get("text", ""), ""
 
 
-ADAPTERS: dict[str, type[Adapter]] = {
+ADAPTERS: dict[AccessMethod, type[Adapter]] = {
     "openrouter": OpenRouterAdapter,
     "gemini_api": GeminiAdapter,
     "openai_api": OpenAIAdapter,
@@ -1112,7 +1136,7 @@ def get_repo_slug() -> str:
     return result.stdout.strip().replace("/", "_")
 
 
-def get_pr_info(pr_number: str) -> dict:
+def get_pr_info(pr_number: str) -> JsonDict:
     """Fetch PR title and body using gh CLI."""
     result = subprocess.run(
         ["gh", "pr", "view", pr_number, "--json", "title,body,headRefOid"],
@@ -1276,7 +1300,7 @@ def existing_comment_anchors(pr_number: str, attribution: str) -> set[tuple[str,
     return anchors
 
 
-def drop_already_posted(comments: list[dict], posted: set[tuple[str, int]]) -> list[dict]:
+def drop_already_posted(comments: list[JsonDict], posted: set[tuple[str, int]]) -> list[JsonDict]:
     """Comments whose (path, line) this tag has not already commented on."""
     return [c for c in comments if (c.get("path", ""), c.get("line")) not in posted]
 
@@ -1284,7 +1308,7 @@ def drop_already_posted(comments: list[dict], posted: set[tuple[str, int]]) -> l
 def post_pr_review(
     pr_number: str,
     summary: str,
-    comments: list[dict],
+    comments: list[JsonDict],
     attribution: str,
     diff: str = "",
 ) -> None:
@@ -1324,8 +1348,8 @@ def post_pr_review(
                 file=sys.stderr,
             )
 
-    valid_inline: list[dict] = []
-    invalid_fallback: list[dict] = []
+    valid_inline: list[JsonDict] = []
+    invalid_fallback: list[JsonDict] = []
     for c in comments:
         line = c.get("line")
         path = c.get("path", "")
@@ -1482,7 +1506,7 @@ def churn_by_file(diff: str) -> list[tuple[str, int]]:
     return sorted(counts.items(), key=lambda item: (-item[1], item[0]))
 
 
-def parse_focus_areas(review: dict) -> list[FocusArea]:
+def parse_focus_areas(review: JsonDict) -> list[FocusArea]:
     """The reviewer's `focus_areas`, malformed entries dropped, capped at MAX_FOCUS_AREAS."""
     raw = review.get("focus_areas")
     if not isinstance(raw, list):
@@ -1550,7 +1574,7 @@ def write_focus_file(
     the whole pass: which head it judged, how large it was, and which slices
     have run since."""
     path = focus_file_path(pr_number, repo_slug)
-    payload = {
+    payload: FocusRecord = {
         "repo": repo_slug,
         "pr": pr_number,
         "head": head,
@@ -1563,21 +1587,20 @@ def write_focus_file(
     return path
 
 
-def slice_gate_reason(focus: dict | None, head: str) -> str | None:
+def slice_gate_reason(focus: FocusRecord | None, head: str) -> str | None:
     """Why a slice may not run against this whole-pass record, or None if it may."""
     if focus is None:
         return "no whole-diff pass has run for this PR; run --pr without path filters first"
-    if focus.get("head") and head and focus["head"] != head:
+    if focus["head"] and head and focus["head"] != head:
         return (
             f"the whole-diff pass judged {focus['head'][:7]} but the PR is now at "
             f"{head[:7]}; run it again before slicing"
         )
-    slices = focus.get("slices") or []
-    if len(slices) >= MAX_SLICE_RUNS:
+    if len(focus["slices"]) >= MAX_SLICE_RUNS:
         return f"{MAX_SLICE_RUNS} slices have already run against this whole pass"
-    if focus.get("focus_areas"):
+    if focus["focus_areas"]:
         return None
-    tokens = int(focus.get("diff_tokens") or 0)
+    tokens = focus["diff_tokens"]
     if tokens >= SLICE_GATE_TOKENS:
         return None
     return (
@@ -1586,18 +1609,36 @@ def slice_gate_reason(focus: dict | None, head: str) -> str | None:
     )
 
 
-def load_focus_file(path: Path) -> dict | None:
+def load_focus_file(path: Path) -> FocusRecord | None:
+    """The whole pass's record, or None if the file is missing or not one this script wrote."""
     if not path.is_file():
         return None
     try:
-        payload = json.loads(path.read_text())
+        raw = json.loads(path.read_text())
     except json.JSONDecodeError:
         return None
-    return payload if isinstance(payload, dict) else None
+    if not isinstance(raw, dict):
+        return None
+    head, tokens, areas, churn, slices = (
+        raw.get(k) for k in ("head", "diff_tokens", "focus_areas", "churn", "slices")
+    )
+    if not (isinstance(head, str) and isinstance(tokens, int)):
+        return None
+    if not (isinstance(areas, list) and isinstance(churn, list) and isinstance(slices, list)):
+        return None
+    return FocusRecord(
+        repo=str(raw.get("repo", "")),
+        pr=str(raw.get("pr", "")),
+        head=head,
+        diff_tokens=tokens,
+        focus_areas=areas,
+        churn=churn,
+        slices=slices,
+    )
 
 
-def record_slice(path: Path, focus: dict, description: str) -> None:
-    focus.setdefault("slices", []).append(description)
+def record_slice(path: Path, focus: FocusRecord, description: str) -> None:
+    focus["slices"].append(description)
     path.write_text(json.dumps(focus, indent=2) + "\n")
 
 
@@ -1682,7 +1723,7 @@ def review_pr(
 
     # A slice runs only when the whole pass earned it. Checked before the
     # size check so a refused slice costs nothing, not even a token estimate.
-    focus: dict | None = None
+    focus: FocusRecord | None = None
     if not whole_pass:
         focus = load_focus_file(focus_path)
         reason = slice_gate_reason(focus, head)
@@ -1729,7 +1770,7 @@ def review_pr(
     prompt = build_pr_prompt(annotated_diff, context_block, extra_instructions, context_files or [])
 
     # Single-turn review — no persisted history.
-    history: list[dict] = []
+    history: list[JsonDict] = []
     history = adapter.add_message(history, "user", prompt)
     request_body = adapter.build_request(PR_REVIEW_SYSTEM_PROMPT, history)
     response_data = adapter.call(request_body)
