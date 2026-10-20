@@ -988,7 +988,7 @@ class OpenRouterAdapter(Adapter):
         # but the two direct adapters must keep working under a bare `python3`
         # with nothing installed.
         try:
-            from openrouter import OpenRouter
+            from openrouter import OpenRouter  # pyright: ignore[reportMissingImports]
         except ImportError:
             print(
                 "Error: the openrouter access method needs the SDK. Run this "
@@ -1147,8 +1147,9 @@ def _parse_diff_anchorable_lines(diff: str) -> dict[str, set[int]]:
     for raw in diff.splitlines():
         m = re.match(r"^diff --git a/\S+ b/(\S+)", raw)
         if m:
-            current_path = m.group(1)
-            result.setdefault(current_path, set())
+            path = m.group(1)
+            result.setdefault(path, set())
+            current_path = path
             in_hunk = False
             continue
         if current_path is None:
@@ -1223,8 +1224,9 @@ def _build_line_content_index(diff: str) -> dict[str, dict[str, list[int]]]:
     for raw in diff.splitlines():
         m = re.match(r"^diff --git a/\S+ b/(\S+)", raw)
         if m:
-            current_path = m.group(1)
-            result.setdefault(current_path, {})
+            path = m.group(1)
+            result.setdefault(path, {})
+            current_path = path
             in_hunk = False
             continue
         if current_path is None:
@@ -1469,8 +1471,9 @@ def churn_by_file(diff: str) -> list[tuple[str, int]]:
     for line in diff.splitlines():
         match = re.match(r"diff --git a/(\S+) b/(\S+)", line)
         if match:
-            current = match.group(2)
-            counts.setdefault(current, 0)
+            path = match.group(2)
+            counts.setdefault(path, 0)
+            current = path
             continue
         if current is None or line.startswith(("+++", "---")):
             continue
@@ -1488,9 +1491,8 @@ def parse_focus_areas(review: dict) -> list[FocusArea]:
     for item in raw:
         if not isinstance(item, dict):
             continue
-        title, invariant, why = (item.get(k) for k in ("title", "invariant", "why"))
-        paths = item.get("paths")
-        if not all(isinstance(v, str) and v for v in (title, invariant)):
+        title, invariant, why, paths = (item.get(k) for k in ("title", "invariant", "why", "paths"))
+        if not (isinstance(title, str) and title and isinstance(invariant, str) and invariant):
             continue
         if not isinstance(paths, list):
             continue
