@@ -6,11 +6,20 @@ argument-hint: 'What will the next session be used for?'
 
 Write a handoff document summarising the current conversation so a fresh agent can continue the work.
 
-Pick a short kebab-case slug (2–5 words) describing the handoff's focus, derived from the user's argument or the conversation. Save the doc to:
+Pick a short kebab-case slug (2–5 words) describing the handoff's focus, derived from the user's argument or the conversation. Then prepare the directory and get the path:
 
-    /tmp/handoff-$(date +%Y%m%d)-<slug>.md
+    dir="$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.handoffs"
+    mkdir -p "$dir" && printf '*\n' > "$dir/.gitignore"
+    find "$dir" -name 'handoff-*.md' -mtime +14 -delete
+    echo "$dir/handoff-$(date +%Y%m%d)-<slug>.md"
 
-The `Write` tool creates the file when the path does not exist, so no prior `Read` is needed. Example: `/tmp/handoff-20260516-fitness-tracker-cli-migration.md`. The date prefix keeps multiple handoffs chronologically sortable; the slug makes the file's purpose obvious from `ls`.
+Write the doc to the printed path with your file-writing tool; a new file needs no prior read. Example: `~/code/app/.handoffs/handoff-20260516-fitness-tracker-cli-migration.md`. The date prefix keeps multiple handoffs chronologically sortable; the slug makes the file's purpose obvious from `ls`.
+
+Why there, and not `/tmp` (cleared at reboot) or `.git/` (write-protected in Claude Code and Codex):
+
+- **The session's worktree is the one place every harness writes without a prompt.** Never `cd` elsewhere to write it; the worktree-boundary hooks block that.
+- **The `*` in `.handoffs/.gitignore` keeps the folder out of git** in any repo, with no entry in the project's own `.gitignore`.
+- **It cleans itself up.** A handoff nobody picked up in two weeks is stale, so each write deletes those; removing the worktree removes the rest.
 
 After writing the file, **print the path as the final line of your response** so the user can hand it to the next session without hunting for it. Also copy a ready-to-paste prompt to the clipboard on platforms where `pbcopy` is available:
 
