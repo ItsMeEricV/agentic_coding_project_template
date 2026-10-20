@@ -1,0 +1,4 @@
+{
+  "include": ["cli"],
+  "pythonVersion": "3.12"
+}

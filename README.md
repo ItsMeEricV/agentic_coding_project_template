@@ -184,7 +184,7 @@ See `cli/README.md` for script-authoring conventions.
 
 - **`.gitignore`** — covers `.env.docker`, `.env*.local`, `node_modules/`, framework build output. Prevents first-commit credential leaks.
 - **`.prettierrc`** + **`tsconfig.json`** — baseline configs that work out of the box for the Next.js stamp's `web/` directory.
-- **`.github/workflows/ci.yml`** — minimal CI: `prettier --check`, `tsc --noEmit`, test suite stub.
+- **`.github/workflows/ci.yml`** — minimal CI: `prettier --check`, `tsc --noEmit`, test suite stub; plus `unittest` and `pyright` over `cli/`.
 
 ---
 

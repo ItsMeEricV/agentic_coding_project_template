@@ -6,8 +6,10 @@ Run with: python3 -m unittest cli.test_agent_code_reviewer -v
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 import urllib.error
+from email.message import Message
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -20,6 +22,7 @@ from agent_code_reviewer import (  # noqa: E402
     SLICE_GATE_TOKENS,
     ConfigError,
     FocusArea,
+    FocusRecord,
     _build_line_content_index,
     _path_matches_any,
     annotate_diff_with_line_numbers,
@@ -34,18 +37,26 @@ from agent_code_reviewer import (  # noqa: E402
     focus_file_path,
     prune_focus_paths,
     slice_gate_reason,
+    write_focus_file,
+    VersionReport,
     format_catalog,
     format_focus_section,
     format_version_report,
     is_prerelease,
     is_transient,
     load_config,
+    load_focus_file,
     make_adapter,
     model_family,
     parse_config,
     parse_focus_areas,
     parse_openrouter_catalog,
 )
+
+
+def _newest_id(report: VersionReport) -> str:
+    assert report.newest is not None
+    return report.newest.id
 
 
 SAMPLE_DIFF = """diff --git a/foo.txt b/foo.txt
@@ -420,6 +431,25 @@ class FocusFileTests(unittest.TestCase):
         self.assertEqual(pruned.paths, ["src/real.ts", "cli/agent_code_reviewer.py"])
         self.assertEqual((pruned.title, pruned.invariant, pruned.why), ("t", "inv", "why"))
 
+    def test_written_record_loads_back(self):
+        areas = [FocusArea(title="t", invariant="i", paths=["a.py"], why="")]
+        with tempfile.TemporaryDirectory() as d:
+            path = write_focus_file("7", areas, [("a.py", 3)], "o_r", "abc1234", 40_000, Path(d))
+            self.assertEqual(path.parent, Path(d))
+            focus = load_focus_file(path)
+        assert focus is not None
+        self.assertEqual(focus["head"], "abc1234")
+        self.assertEqual(focus["churn"], [{"path": "a.py", "lines": 3}])
+        self.assertEqual(focus["slices"], [])
+
+    def test_malformed_record_is_no_record(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "focus.json"
+            for body in ("not json", "[]", '{"head": 1}', '{"head": "x", "diff_tokens": 1}'):
+                path.write_text(body)
+                self.assertIsNone(load_focus_file(path), body)
+            self.assertIsNone(load_focus_file(Path(d) / "missing.json"))
+
 
 class _StatusError(Exception):
     def __init__(self, status_code: int):
@@ -443,7 +473,7 @@ class RetryTests(unittest.TestCase):
         return adapter, calls
 
     def test_classifies_transient_errors(self):
-        http = lambda code: urllib.error.HTTPError("u", code, "m", {}, None)  # noqa: E731
+        http = lambda code: urllib.error.HTTPError("u", code, "m", Message(), None)  # noqa: E731
         self.assertTrue(is_transient(http(429)))
         self.assertTrue(is_transient(http(503)))
         self.assertFalse(is_transient(http(401)))
@@ -473,6 +503,28 @@ class RetryTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
 
 
+class HistoryTests(unittest.TestCase):
+    def test_every_adapter_has_history_methods(self):
+        cfg = load_config()
+        for entry in cfg.entries:
+            adapter = make_adapter(entry)
+            for name in ("history_file", "load_history", "save_history", "reset_history"):
+                self.assertTrue(callable(getattr(adapter, name, None)), f"{entry.key}.{name}")
+
+    def test_history_round_trip_scoped_by_session(self):
+        with tempfile.TemporaryDirectory() as d:
+            adapter = make_adapter(load_config().default_entry(), Path(d))
+            self.assertEqual(adapter.history_file().parent, Path(d))
+            adapter.reset_history()
+            self.assertEqual(adapter.load_history(session="s1"), [])
+            msgs = adapter.add_message([], "user", "hello")
+            adapter.save_history(msgs, session="s1")
+            self.assertEqual(adapter.load_history(session="s1"), msgs)
+            self.assertEqual(adapter.load_history(session=None), [])
+            adapter.reset_history()
+            self.assertEqual(adapter.load_history(session="s1"), [])
+
+
 class DedupeTests(unittest.TestCase):
     def test_drops_only_exact_path_and_line_matches(self):
         comments = [
@@ -488,30 +540,49 @@ class DedupeTests(unittest.TestCase):
         self.assertEqual(drop_already_posted(comments, set()), comments)
 
 
+def _focus(
+    *, focus_areas: list[dict] | None = None, slices: int = 0, diff_tokens: int = 40_000
+) -> FocusRecord:
+    return FocusRecord(
+        repo="o/r",
+        pr="1",
+        head="abc1234",
+        diff_tokens=diff_tokens,
+        focus_areas=focus_areas or [],
+        churn=[],
+        slices=["s"] * slices,
+    )
+
+
 class SliceGateTests(unittest.TestCase):
-    NOMINATED = {"head": "abc1234", "diff_tokens": 40_000, "focus_areas": [{"title": "t"}], "slices": []}
-    QUIET_SMALL = {"head": "abc1234", "diff_tokens": 40_000, "focus_areas": [], "slices": []}
-    QUIET_LARGE = {"head": "abc1234", "diff_tokens": SLICE_GATE_TOKENS, "focus_areas": [], "slices": []}
+    def _refusal(self, focus: FocusRecord | None, head: str) -> str:
+        reason = slice_gate_reason(focus, head)
+        assert reason is not None
+        return reason
+
+    NOMINATED = _focus(focus_areas=[{"title": "t"}])
+    QUIET_SMALL = _focus()
+    QUIET_LARGE = _focus(diff_tokens=SLICE_GATE_TOKENS)
 
     def test_no_whole_pass_refuses(self):
-        self.assertIn("no whole-diff pass", slice_gate_reason(None, "abc1234"))
+        self.assertIn("no whole-diff pass", self._refusal(None, "abc1234"))
 
     def test_nomination_admits(self):
         self.assertIsNone(slice_gate_reason(self.NOMINATED, "abc1234"))
 
     def test_quiet_small_pass_refuses(self):
-        self.assertIn("nominated no focus area", slice_gate_reason(self.QUIET_SMALL, "abc1234"))
+        self.assertIn("nominated no focus area", self._refusal(self.QUIET_SMALL, "abc1234"))
 
     def test_quiet_large_pass_admits(self):
         self.assertIsNone(slice_gate_reason(self.QUIET_LARGE, "abc1234"))
 
     def test_moved_head_refuses(self):
-        self.assertIn("PR is now at", slice_gate_reason(self.NOMINATED, "fff9999"))
+        self.assertIn("PR is now at", self._refusal(self.NOMINATED, "fff9999"))
 
     def test_cap_refuses_fourth_slice(self):
-        full = {**self.NOMINATED, "slices": ["s"] * MAX_SLICE_RUNS}
-        self.assertIn("already run", slice_gate_reason(full, "abc1234"))
-        almost = {**self.NOMINATED, "slices": ["s"] * (MAX_SLICE_RUNS - 1)}
+        full = _focus(focus_areas=[{"title": "t"}], slices=MAX_SLICE_RUNS)
+        self.assertIn("already run", self._refusal(full, "abc1234"))
+        almost = _focus(focus_areas=[{"title": "t"}], slices=MAX_SLICE_RUNS - 1)
         self.assertIsNone(slice_gate_reason(almost, "abc1234"))
 
 
@@ -666,18 +737,18 @@ class CheckVersionsTests(unittest.TestCase):
 
     def test_reports_newest_same_family_pinned_id(self):
         report = self._report()
-        self.assertEqual(report["opus"].newest.id, "anthropic/claude-opus-5.5")
+        self.assertEqual(_newest_id(report["opus"]), "anthropic/claude-opus-5.5")
         self.assertIsNone(report["sol"].newest)
         self.assertTrue(report["sol"].in_catalog)
 
     def test_aliases_batch_and_suffixed_variants_are_not_upgrades(self):
         report = self._report()
         # not the :batch variant, the ~alias, or the -pro sibling
-        self.assertEqual(report["opus"].newest.id, "anthropic/claude-opus-5.5")
+        self.assertEqual(_newest_id(report["opus"]), "anthropic/claude-opus-5.5")
 
     def test_direct_api_ids_match_by_catalog_suffix(self):
         report = self._report()
-        self.assertEqual(report["gem"].newest.id, "google/gemini-3.2-pro-preview")
+        self.assertEqual(_newest_id(report["gem"]), "google/gemini-3.2-pro-preview")
 
     def test_entry_missing_from_catalog_is_flagged(self):
         report = self._report()
@@ -710,10 +781,10 @@ class CheckVersionsByDateTests(unittest.TestCase):
         return check_versions(roster, parse_openrouter_catalog(self.CATALOG))[0]
 
     def test_listing_date_beats_version_arithmetic(self):
-        self.assertEqual(self._report("x-ai/grok-4.6").newest.id, "x-ai/grok-4.7")
+        self.assertEqual(_newest_id(self._report("x-ai/grok-4.6")), "x-ai/grok-4.7")
 
     def test_decimal_style_higher_number_is_not_an_upgrade(self):
-        self.assertEqual(self._report("x-ai/grok-4.20").newest.id, "x-ai/grok-4.7")
+        self.assertEqual(_newest_id(self._report("x-ai/grok-4.20")), "x-ai/grok-4.7")
         self.assertIsNone(self._report("x-ai/grok-4.7").newest)
 
     def test_report_shows_both_listing_dates(self):
@@ -735,7 +806,7 @@ class CheckVersionsByDateTests(unittest.TestCase):
         entry["id"] = "gemini-3.1-pro-preview"
         roster = parse_config(_raw([entry], default="g"))
         report = check_versions(roster, catalog)[0]
-        self.assertEqual(report.newest.id, "google/gemini-3.1-pro")
+        self.assertEqual(_newest_id(report), "google/gemini-3.1-pro")
 
     def test_a_later_preview_never_supersedes_a_final_release(self):
         catalog = parse_openrouter_catalog(
@@ -755,13 +826,13 @@ class CheckVersionsByDateTests(unittest.TestCase):
         catalog = parse_openrouter_catalog({"data": [_cat("v/m-2-beta"), _cat("v/m-2")]})
         entry = {"key": "m", "name": "M", "access_method": "openrouter", "id": "v/m-2-beta"}
         roster = parse_config(_raw([entry], default="m"))
-        self.assertEqual(check_versions(roster, catalog)[0].newest.id, "v/m-2")
+        self.assertEqual(_newest_id(check_versions(roster, catalog)[0]), "v/m-2")
 
     def test_version_tuple_is_the_fallback_without_dates(self):
         catalog = parse_openrouter_catalog({"data": [_cat("v/m-1.2"), _cat("v/m-1.10")]})
         entry = {"key": "m", "name": "M", "access_method": "openrouter", "id": "v/m-1.2"}
         roster = parse_config(_raw([entry], default="m"))
-        self.assertEqual(check_versions(roster, catalog)[0].newest.id, "v/m-1.10")
+        self.assertEqual(_newest_id(check_versions(roster, catalog)[0]), "v/m-1.10")
 
 
 class BuildPrPromptTests(unittest.TestCase):
