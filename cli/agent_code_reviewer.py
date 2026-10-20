@@ -238,6 +238,9 @@ CHARS_PER_TOKEN: int = 4
 # draw dozens of comments, each with a verbatim code excerpt.
 REPLY_RESERVE_TOKENS: int = 32_000
 
+# Where per-model history and per-PR focus files live. Tests pass a temp dir.
+STATE_DIR: Path = Path("/tmp")
+
 # String-keyed JSON whose shape is owned by a remote API or the model. Typed
 # loosely on purpose: the runtime isinstance checks at each parse site are the
 # real validation, and a TypedDict here would promise more than they verify.
@@ -699,8 +702,9 @@ def is_transient(exc: BaseException) -> bool:
 class Adapter(ABC):
     """Strategy interface for one access method, bound to one roster entry."""
 
-    def __init__(self, entry: ModelEntry) -> None:
+    def __init__(self, entry: ModelEntry, state_dir: Path = STATE_DIR) -> None:
         self.entry = entry
+        self.state_dir = state_dir
 
     @abstractmethod
     def api_key(self) -> str | None:
@@ -749,7 +753,7 @@ class Adapter(ABC):
     # switching models never replays another model's conversation.
 
     def history_file(self) -> Path:
-        return Path(f"/tmp/agent_reviewer_{self.entry.key}.json")
+        return self.state_dir / f"agent_reviewer_{self.entry.key}.json"
 
     def load_history_raw(self) -> JsonDict:
         hf = self.history_file()
@@ -863,8 +867,8 @@ class OpenAIAdapter(Adapter):
     Local-store entries are kept for `--history` display + TTL bookkeeping
     regardless of mode."""
 
-    def __init__(self, entry: ModelEntry) -> None:
-        super().__init__(entry)
+    def __init__(self, entry: ModelEntry, state_dir: Path = STATE_DIR) -> None:
+        super().__init__(entry, state_dir)
         # Populated by load_history(); read by build_request().
         self._last_response_id: str | None = None
 
@@ -1040,9 +1044,9 @@ ADAPTERS: dict[AccessMethod, type[Adapter]] = {
 }
 
 
-def make_adapter(entry: ModelEntry) -> Adapter:
+def make_adapter(entry: ModelEntry, state_dir: Path = STATE_DIR) -> Adapter:
     try:
-        return ADAPTERS[entry.access_method](entry)
+        return ADAPTERS[entry.access_method](entry, state_dir)
     except KeyError:
         # parse_config validates the enum, so reaching here means a new
         # access_method was added to ACCESS_METHODS without an adapter.
@@ -1545,10 +1549,10 @@ def format_focus_section(areas: list[FocusArea]) -> str:
     return "\n".join(lines)
 
 
-def focus_file_path(pr_number: str, repo_slug: str) -> Path:
+def focus_file_path(pr_number: str, repo_slug: str, state_dir: Path = STATE_DIR) -> Path:
     """Beside the history files, scoped by repo so PR #68 in two repos cannot collide."""
     scope = f"{repo_slug}_" if repo_slug else ""
-    return Path(f"/tmp/agent_reviewer_{scope}pr{pr_number}_focus.json")
+    return state_dir / f"agent_reviewer_{scope}pr{pr_number}_focus.json"
 
 
 def prune_focus_paths(areas: list[FocusArea], known_paths: set[str]) -> list[FocusArea]:
@@ -1569,11 +1573,12 @@ def write_focus_file(
     repo_slug: str = "",
     head: str = "",
     diff_tokens: int = 0,
+    state_dir: Path = STATE_DIR,
 ) -> Path:
     """Machine-readable hand-off for the skill, and the slice gate's record of
     the whole pass: which head it judged, how large it was, and which slices
     have run since."""
-    path = focus_file_path(pr_number, repo_slug)
+    path = focus_file_path(pr_number, repo_slug, state_dir)
     payload: FocusRecord = {
         "repo": repo_slug,
         "pr": pr_number,

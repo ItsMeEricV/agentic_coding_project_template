@@ -433,11 +433,10 @@ class FocusFileTests(unittest.TestCase):
 
     def test_written_record_loads_back(self):
         areas = [FocusArea(title="t", invariant="i", paths=["a.py"], why="")]
-        path = write_focus_file("7", areas, [("a.py", 3)], "o_r", "abc1234", 40_000)
-        try:
+        with tempfile.TemporaryDirectory() as d:
+            path = write_focus_file("7", areas, [("a.py", 3)], "o_r", "abc1234", 40_000, Path(d))
+            self.assertEqual(path.parent, Path(d))
             focus = load_focus_file(path)
-        finally:
-            path.unlink()
         assert focus is not None
         self.assertEqual(focus["head"], "abc1234")
         self.assertEqual(focus["churn"], [{"path": "a.py", "lines": 3}])
@@ -513,15 +512,17 @@ class HistoryTests(unittest.TestCase):
                 self.assertTrue(callable(getattr(adapter, name, None)), f"{entry.key}.{name}")
 
     def test_history_round_trip_scoped_by_session(self):
-        adapter = make_adapter(load_config().default_entry())
-        adapter.reset_history()
-        self.assertEqual(adapter.load_history(session="s1"), [])
-        msgs = adapter.add_message([], "user", "hello")
-        adapter.save_history(msgs, session="s1")
-        self.assertEqual(adapter.load_history(session="s1"), msgs)
-        self.assertEqual(adapter.load_history(session=None), [])
-        adapter.reset_history()
-        self.assertEqual(adapter.load_history(session="s1"), [])
+        with tempfile.TemporaryDirectory() as d:
+            adapter = make_adapter(load_config().default_entry(), Path(d))
+            self.assertEqual(adapter.history_file().parent, Path(d))
+            adapter.reset_history()
+            self.assertEqual(adapter.load_history(session="s1"), [])
+            msgs = adapter.add_message([], "user", "hello")
+            adapter.save_history(msgs, session="s1")
+            self.assertEqual(adapter.load_history(session="s1"), msgs)
+            self.assertEqual(adapter.load_history(session=None), [])
+            adapter.reset_history()
+            self.assertEqual(adapter.load_history(session="s1"), [])
 
 
 class DedupeTests(unittest.TestCase):
