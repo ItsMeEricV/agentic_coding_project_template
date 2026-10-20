@@ -15,7 +15,7 @@ default = "codex-sol"
 # major version of an entry's family (`claude-opus-5.5` -> `claude-opus-6`), or
 # a family no entry uses from a vendor below (`gemini-4-argon` beside
 # `gemini-3.1-pro`). Decide, then move the date; declining counts.
-catalog_reviewed = 2026-04-20
+catalog_reviewed = 2026-10-20
 
 # Each entry declares:
 #   key            short slug passed to --model; also names the entry's history
@@ -58,6 +58,14 @@ access_method = "openrouter"
 id = "openai/gpt-6.1-sol"
 context_window = 1_050_000
 tag = "CODEX"
+
+[[models]]
+key = "gemini-argon"
+name = "Gemini 4 Argon — Google API"
+access_method = "gemini_api"
+id = "gemini-4-argon"
+context_window = 1_048_576
+tag = "GEMINI"
 
 [[models]]
 key = "gemini-pro"
