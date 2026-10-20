@@ -10,9 +10,11 @@ Review runs check the public catalog once a day on their own. To run the check o
 uv run cli/agent_code_reviewer.py --check-versions
 ```
 
-It reports two things. First, a same-family id listed later (`claude-opus-5` → `claude-opus-5.5`), with both listing dates, window, and price. The listing date decides, not the version number: xAI's `grok-4.20` predates `grok-4.6`. On a review run these are a stderr note and the run carries on. Second, a **new family**: a model from a vendor the roster already uses, under a name no entry carries (`gemini-4-argon` beside `gemini-3.1-pro`), first listed after the roster's `families_reviewed` date. Review runs exit 5 until that is settled.
+It reports two things. First, a same-family id listed later (`claude-opus-5` → `claude-opus-5.5`), with both listing dates, window, and price. The listing date decides, not the version number: xAI's `grok-4.20` predates `grok-4.6`. Second, a **new family**: a model from a vendor the roster already uses, under a name no entry carries (`gemini-4-argon` beside `gemini-3.1-pro`). A suffix makes a separate family, so `gpt-6.1-sol-pro` is never offered as an upgrade of `gpt-6.1-sol`.
 
-Settling exit 5 is the user's call. Show them the table, and for each family they want, bump or add the entry it replaces (below). Then set `families_reviewed` to today, even if nothing else changed: the date records that someone looked. Report only — the script never edits the roster. Bump `id`, `name`, and `context_window` together, and only when the user asks.
+On a review run, a minor bump is a stderr note and the run carries on. A **major jump** (`claude-opus-5.5` → `claude-opus-6`) or a new family, listed after the roster's `catalog_reviewed` date, exits 5 until it is settled.
+
+Settling exit 5 is the user's call. Show them the tables, and for each model they want, bump or add the entry (below). Then set `catalog_reviewed` to today, even if they declined everything: the date records that someone looked. Report only — the script never edits the roster. Bump `id`, `name`, and `context_window` together, and only when the user asks.
 
 ## Adding a model
 

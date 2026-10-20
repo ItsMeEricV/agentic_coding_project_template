@@ -25,7 +25,7 @@ from agent_code_reviewer import (  # noqa: E402
     SLICE_GATE_TOKENS,
     ConfigError,
     FocusArea,
-    NewFamilyError,
+    UnreviewedCatalogError,
     FocusRecord,
     _build_line_content_index,
     _path_matches_any,
@@ -53,6 +53,7 @@ from agent_code_reviewer import (  # noqa: E402
     load_cached_catalog,
     load_config,
     load_focus_file,
+    major_jumps,
     make_adapter,
     model_family,
     new_families,
@@ -184,7 +185,7 @@ def _raw(models=None, default="a"):
         models = [
             {"key": "a", "name": "A", "access_method": "gemini_api", "id": "m-a"}
         ]
-    return {"default": default, "families_reviewed": date(2026, 1, 1), "models": models}
+    return {"default": default, "catalog_reviewed": date(2026, 1, 1), "models": models}
 
 
 class ParseConfigTests(unittest.TestCase):
@@ -253,20 +254,20 @@ class ParseConfigTests(unittest.TestCase):
         with self.assertRaises(ConfigError):
             parse_config(raw)
 
-    def test_families_reviewed_is_a_date(self):
-        self.assertEqual(parse_config(_raw()).families_reviewed, date(2026, 1, 1))
+    def test_catalog_reviewed_is_a_date(self):
+        self.assertEqual(parse_config(_raw()).catalog_reviewed, date(2026, 1, 1))
 
-    def test_rejects_missing_quoted_or_timestamped_families_reviewed(self):
+    def test_rejects_missing_quoted_or_timestamped_catalog_reviewed(self):
         for value in (None, "2026-01-01", datetime(2026, 1, 1, 12)):
             with self.subTest(value=value):
                 raw = _raw()
                 if value is None:
-                    del raw["families_reviewed"]
+                    del raw["catalog_reviewed"]
                 else:
-                    raw["families_reviewed"] = value
+                    raw["catalog_reviewed"] = value
                 with self.assertRaises(ConfigError) as ctx:
                     parse_config(raw)
-                self.assertIn("families_reviewed", str(ctx.exception))
+                self.assertIn("catalog_reviewed", str(ctx.exception))
 
     def test_rejects_empty_roster(self):
         with self.assertRaises(ConfigError):
@@ -874,7 +875,7 @@ def _family_roster(reviewed=date(2026, 4, 30), extra=()):
         *extra,
     ]
     raw = _raw(entries, default="gem")
-    raw["families_reviewed"] = reviewed
+    raw["catalog_reviewed"] = reviewed
     return parse_config(raw)
 
 
@@ -941,6 +942,38 @@ class NewFamiliesTests(unittest.TestCase):
         self.assertIn("NEW FAMILY", text)
         self.assertIn("google/gemini-4-argon", text)
         self.assertIn("2026-09-21", text)
+
+
+class MajorJumpTests(unittest.TestCase):
+    def _jumps(self, rows):
+        catalog = parse_openrouter_catalog({"data": ROSTER_ROWS + rows})
+        return {r.entry.key: _newest_id(r) for r in major_jumps(_family_roster(), catalog)}
+
+    def test_a_higher_major_after_the_review_date_is_a_jump(self):
+        jumps = self._jumps([_cat("anthropic/claude-opus-6", created=SEP_2026)])
+        self.assertEqual(jumps, {"opus": "anthropic/claude-opus-6"})
+
+    def test_a_minor_bump_is_not_a_jump(self):
+        self.assertEqual(self._jumps([_cat("anthropic/claude-opus-5.6", created=SEP_2026)]), {})
+
+    def test_a_major_listed_by_the_review_date_is_settled(self):
+        settled = _cat("anthropic/claude-opus-6", created=APR_2026 + DAY - 1)
+        self.assertEqual(self._jumps([settled]), {})
+
+    def test_the_newest_higher_major_leads_even_when_a_minor_is_newer(self):
+        rows = [
+            _cat("anthropic/claude-opus-6", created=AUG_2026),
+            _cat("anthropic/claude-opus-5.6", created=SEP_2026),
+        ]
+        self.assertEqual(self._jumps(rows), {"opus": "anthropic/claude-opus-6"})
+
+    def test_a_preview_of_the_next_major_never_outranks_a_final_release(self):
+        preview = _cat("anthropic/claude-opus-6-preview", created=SEP_2026)
+        self.assertEqual(self._jumps([preview]), {})
+
+    def test_a_preview_entry_jumps_to_the_next_major_preview(self):
+        preview = _cat("google/gemini-4-pro-preview", created=SEP_2026)
+        self.assertEqual(self._jumps([preview]), {"gem": "google/gemini-4-pro-preview"})
 
 
 GATE_CATALOG = {
@@ -1013,14 +1046,24 @@ class VersionGateTests(unittest.TestCase):
             self.assertEqual(result, (None, False))
             version_gate(_family_roster(), self.cache, self.NOW, self._unreachable)
 
-    def test_a_new_family_blocks_every_run_until_the_date_moves(self):
+    def test_a_jump_or_new_family_blocks_every_run_until_the_date_moves(self):
         for now in (self.NOW, self.NOW + 60):
-            with self.subTest(now=now), self.assertRaises(NewFamilyError) as ctx:
+            with self.subTest(now=now), self.assertRaises(UnreviewedCatalogError) as ctx:
                 self._gate(_family_roster(), now)
-            self.assertIn("google/gemini-4-argon", str(ctx.exception))
-            self.assertIn("families_reviewed = 2026-04-30", str(ctx.exception))
+            message = str(ctx.exception)
+            self.assertIn("Major version jumps:", message)
+            self.assertIn("anthropic/claude-opus-6", message)
+            self.assertIn("New families:", message)
+            self.assertIn("google/gemini-4-argon", message)
+            self.assertIn("catalog_reviewed = 2026-04-30", message)
         self.assertEqual(self.fetches, 1)
         self._gate(_family_roster(reviewed=date(2026, 9, 21)), self.NOW + 120)
+
+    def test_a_blocked_jump_is_not_repeated_in_the_stale_note(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(UnreviewedCatalogError):
+            version_gate(_family_roster(), self.cache, self.NOW, self._fetch)
+        self.assertNotIn("claude-opus-6", err.getvalue())
 
     def test_stale_entries_are_noted_only_on_the_fetching_run(self):
         roster = _family_roster(reviewed=date(2026, 10, 1))

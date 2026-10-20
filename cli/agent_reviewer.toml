@@ -10,12 +10,12 @@
 # Model used when --model is omitted. Must match a key below.
 default = "codex-sol"
 
-# The day the catalog's model families were last weighed against this roster.
-# A family from a vendor below that the roster does not use, first listed after
-# this date (`gemini-4-argon` beside `gemini-3.1-pro`), blocks review runs with
-# exit 5 until someone decides whether it replaces an entry and moves the date.
-# An unquoted TOML date.
-families_reviewed = 2026-04-20
+# The day the model catalog was last weighed against this roster. A listing
+# after it that could change an entry blocks review runs with exit 5: a higher
+# major version of an entry's family (`claude-opus-5.5` -> `claude-opus-6`), or
+# a family no entry uses from a vendor below (`gemini-4-argon` beside
+# `gemini-3.1-pro`). Decide, then move the date; declining counts.
+catalog_reviewed = 2026-04-20
 
 # Each entry declares:
 #   key            short slug passed to --model; also names the entry's history

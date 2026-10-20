@@ -62,12 +62,13 @@ Version Check:
   A review run (a message or --pr) fetches OpenRouter's public catalog at most
   once a day per roster (~1 MB, no key), cached at
   /tmp/agent_reviewer_catalog_<roster hash>.json; editing the roster refetches.
-  A newer same-family id for an entry is a stderr note on the fetching run. A
-  model family the roster does not use, from a vendor it does, first listed
-  after the roster's `families_reviewed` date blocks every review run (exit 5)
-  until someone weighs it and moves the date. An unreachable catalog never
-  blocks: the stale cache stands, or the check is skipped. --skip-version-check
-  skips both for one run.
+  Two kinds of listing after the roster's `catalog_reviewed` date block every
+  review run (exit 5) until someone weighs them and moves the date: a higher
+  major version of an entry's family (claude-opus-5.5 -> claude-opus-6), and a
+  family the roster does not use from a vendor it does (gemini-4-argon). A
+  minor bump (grok-4.6 -> grok-4.7) is a stderr note on the fetching run. An
+  unreachable catalog never blocks: the stale cache stands, or the check is
+  skipped. --skip-version-check skips the whole check for one run.
 
 Conversation History:
   - One file per roster entry: /tmp/agent_reviewer_<key>.json
@@ -115,8 +116,8 @@ Exit codes:
   4  a slice run (--only-path / --ignore-path) the whole-diff pass did not
      earn: no pass yet, PR head moved, no nomination under 150K tokens, or
      three slices already ran
-  5  the catalog lists a model family first listed after the roster's
-     `families_reviewed`; the message names each one
+  5  the catalog lists a major version or model family first listed after the
+     roster's `catalog_reviewed`; the message names each one
 """
 
 from __future__ import annotations
@@ -289,8 +290,8 @@ class SliceGateError(Exception):
     """A slice run the whole pass did not earn. main() exits 4."""
 
 
-class NewFamilyError(Exception):
-    """A catalog family the roster has not been weighed against. main() exits 5."""
+class UnreviewedCatalogError(Exception):
+    """A major version or family listed after `catalog_reviewed`. main() exits 5."""
 
 
 MAX_FOCUS_AREAS: int = 3
@@ -334,7 +335,7 @@ class FocusArea:
 class Roster:
     entries: list[ModelEntry]
     default_key: str
-    families_reviewed: date
+    catalog_reviewed: date
 
     def get(self, key: str) -> ModelEntry:
         for entry in self.entries:
@@ -356,12 +357,12 @@ def parse_config(raw: JsonDict) -> Roster:
     if not isinstance(default, str) or not default:
         raise ConfigError("roster needs a top-level `default = \"<key>\"`")
 
-    reviewed = raw.get("families_reviewed")
+    reviewed = raw.get("catalog_reviewed")
     # A TOML datetime parses to a date subclass; the roster wants the bare day.
     if not isinstance(reviewed, date) or isinstance(reviewed, datetime):
         raise ConfigError(
-            "roster needs a top-level `families_reviewed = YYYY-MM-DD` (an unquoted "
-            "TOML date): the day the catalog's model families were last weighed"
+            "roster needs a top-level `catalog_reviewed = YYYY-MM-DD` (an unquoted "
+            "TOML date): the day the model catalog was last weighed against it"
         )
 
     models = raw.get("models")
@@ -436,7 +437,7 @@ def parse_config(raw: JsonDict) -> Roster:
         raise ConfigError(
             f"default {default!r} matches no entry; valid keys: {', '.join(sorted(seen))}"
         )
-    return Roster(entries=entries, default_key=default, families_reviewed=reviewed)
+    return Roster(entries=entries, default_key=default, catalog_reviewed=reviewed)
 
 
 def load_config(path: Path = CONFIG_PATH) -> Roster:
@@ -619,6 +620,25 @@ def _resolve(entry: ModelEntry, pinned: list[CatalogModel]) -> CatalogModel | No
     return next((m for m in pinned if m.id == entry.id or m.id.endswith("/" + entry.id)), None)
 
 
+def _newer(current: CatalogModel, pinned: list[CatalogModel]) -> list[CatalogModel]:
+    family = model_family(current.id)[0]
+    return [
+        m
+        for m in pinned
+        if m.id != current.id and model_family(m.id)[0] == family and _is_newer(m, current)
+    ]
+
+
+def _latest(models: list[CatalogModel]) -> CatalogModel | None:
+    return max(models, key=lambda m: (m.created, model_family(m.id)[1]), default=None)
+
+
+def _review_cutoff(roster: Roster) -> int:
+    """Unix seconds from which a listing is unreviewed. A listing on the
+    reviewed day itself counts as reviewed."""
+    return calendar.timegm(roster.catalog_reviewed.timetuple()) + 24 * 60 * 60
+
+
 def check_versions(roster: Roster, catalog: list[CatalogModel]) -> list[VersionReport]:
     """For each roster entry, the newest same-family pinned catalog id, if newer.
     Aliases and batch variants are never offered as upgrades."""
@@ -629,14 +649,31 @@ def check_versions(roster: Roster, catalog: list[CatalogModel]) -> list[VersionR
         if current is None:
             reports.append(VersionReport(entry, in_catalog=False, current=None, newest=None))
             continue
-        family = model_family(current.id)[0]
-        newer = [
-            m
-            for m in pinned
-            if m.id != current.id and model_family(m.id)[0] == family and _is_newer(m, current)
-        ]
-        newest = max(newer, key=lambda m: (m.created, model_family(m.id)[1]), default=None)
+        newest = _latest(_newer(current, pinned))
         reports.append(VersionReport(entry, in_catalog=True, current=current, newest=newest))
+    return reports
+
+
+def major_jumps(roster: Roster, catalog: list[CatalogModel]) -> list[VersionReport]:
+    """Entries whose family gained a higher major version (`opus-5.5` -> `opus-6`)
+    after `catalog_reviewed`, each with the newest such id. Gated on the listing
+    date so that declining the jump and moving the date settles it."""
+    pinned = _pinned(catalog)
+    cutoff = _review_cutoff(roster)
+    reports: list[VersionReport] = []
+    for entry in roster.entries:
+        current = _resolve(entry, pinned)
+        if current is None or not model_family(current.id)[1]:
+            continue
+        major = model_family(current.id)[1][:1]
+        jumps = [
+            m
+            for m in _newer(current, pinned)
+            if m.created >= cutoff and model_family(m.id)[1][:1] > major
+        ]
+        if jumps:
+            newest = _latest(jumps)
+            reports.append(VersionReport(entry, in_catalog=True, current=current, newest=newest))
     return reports
 
 
@@ -687,7 +724,7 @@ class NewFamily:
 def new_families(roster: Roster, catalog: list[CatalogModel]) -> list[NewFamily]:
     """Families the roster has never weighed: from a vendor it already uses, a name
     none of its entries carry (`gemini-4-argon` beside `gemini-3.1-pro`), first
-    listed after `families_reviewed`. check_versions cannot see these, since it
+    listed after `catalog_reviewed`. check_versions cannot see these, since it
     only follows families the roster has. Image and audio models cannot review
     code, and a `:variant` id repeats a family rather than starting one."""
     pinned = _pinned(catalog)
@@ -699,14 +736,13 @@ def new_families(roster: Roster, catalog: list[CatalogModel]) -> list[NewFamily]
         if m.text_only and ":" not in m.id and m.id.partition("/")[0] in vendors:
             by_family.setdefault(model_family(m.id)[0], []).append(m)
 
-    # A family first listed on the reviewed day itself counts as reviewed.
-    cutoff = calendar.timegm(roster.families_reviewed.timetuple()) + 24 * 60 * 60
+    cutoff = _review_cutoff(roster)
     found = []
     for family, models in by_family.items():
         listed = min(m.created for m in models)
-        if family in known or listed < cutoff:
+        newest = _latest(models)
+        if family in known or listed < cutoff or newest is None:
             continue
-        newest = max(models, key=lambda m: (m.created, model_family(m.id)[1]))
         found.append(NewFamily(family, listed, newest))
     return sorted(found, key=lambda f: f.listed, reverse=True)
 
@@ -802,13 +838,20 @@ def load_cached_catalog(
 
 
 def version_gate(roster: Roster, cache: Path, now: float, fetch: Callable[[], JsonDict]) -> None:
-    """Runs before a review. The day's fetching run notes stale entries on
-    stderr; every run raises NewFamilyError while a new family is unweighed."""
+    """Runs before a review. The day's fetching run notes stale entries on stderr;
+    every run raises UnreviewedCatalogError while a major jump or new family is
+    unweighed."""
     catalog, fetched = load_cached_catalog(cache, now, fetch)
     if catalog is None:
         return
+    jumps = major_jumps(roster, catalog)
     if fetched:
-        stale = [r for r in check_versions(roster, catalog) if r.newest or not r.in_catalog]
+        blocked = {r.entry.key for r in jumps}
+        stale = [
+            r
+            for r in check_versions(roster, catalog)
+            if (r.newest or not r.in_catalog) and r.entry.key not in blocked
+        ]
         if stale:
             print(
                 "--> Daily version check: roster entries with a newer same-family id or "
@@ -817,14 +860,20 @@ def version_gate(roster: Roster, cache: Path, now: float, fetch: Callable[[], Js
                 file=sys.stderr,
             )
     found = new_families(roster, catalog)
+    sections = []
+    if jumps:
+        sections.append(f"Major version jumps:\n{format_version_report(jumps)}")
     if found:
-        raise NewFamilyError(
-            "the catalog lists model families first listed after the roster's "
-            f"families_reviewed = {roster.families_reviewed}:\n\n"
-            f"{format_new_families(found)}\n\n"
-            "Weigh each against the roster entry it could replace (--find-model prints "
-            f"its ids), then set families_reviewed in {CONFIG_PATH.name} to today. "
-            "--skip-version-check defers this for one run; only the user should pass it."
+        sections.append(f"New families:\n{format_new_families(found)}")
+    if sections:
+        raise UnreviewedCatalogError(
+            "the catalog lists models first listed after the roster's "
+            f"catalog_reviewed = {roster.catalog_reviewed}:\n\n"
+            + "\n\n".join(sections)
+            + "\n\nWeigh each against the roster entry it could replace (--find-model "
+            f"prints its ids), then set catalog_reviewed in {CONFIG_PATH.name} to today; "
+            "declining counts. --skip-version-check defers this for one run; only the "
+            "user should pass it."
         )
 
 
@@ -2037,8 +2086,8 @@ def main() -> None:
         help=(
             "Compare every roster entry against OpenRouter's public catalog and report "
             "same-family ids listed later (e.g. claude-opus-5 -> claude-opus-5.5). The "
-            "listing date decides, not version arithmetic. Also lists new families "
-            "(see --skip-version-check). Report only; the roster is never edited. "
+            "listing date decides, not version arithmetic. Also lists families the "
+            "roster's vendors added. Report only; the roster is never edited. "
             "Needs no API key."
         ),
     )
@@ -2048,7 +2097,7 @@ def main() -> None:
         action="store_true",
         help=(
             "Skip this run's daily catalog check, including its exit-5 block on a "
-            "model family newer than the roster's families_reviewed date."
+            "major version or model family listed after the roster's catalog_reviewed."
         ),
     )
     parser.add_argument(
@@ -2147,7 +2196,7 @@ def main() -> None:
             if found:
                 print(format_new_families(found))
             else:
-                print(f"No new families since families_reviewed = {roster.families_reviewed}.")
+                print(f"No new families since catalog_reviewed = {roster.catalog_reviewed}.")
             return
         entry = roster.get(args.model_key) if args.model_key else roster.default_entry()
     except ConfigError as exc:
@@ -2189,7 +2238,7 @@ def main() -> None:
                 time.time(),
                 lambda: fetch_openrouter_catalog(timeout=VERSION_CHECK_TIMEOUT_SECONDS),
             )
-        except NewFamilyError as exc:
+        except UnreviewedCatalogError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             sys.exit(5)
 
