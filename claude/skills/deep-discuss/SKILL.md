@@ -13,10 +13,7 @@ If a question can be answered by exploring the codebase, explore the codebase in
 
 ### Scope the tree before grilling
 
-Before asking anything, enumerate the open decisions as a short list and show it to me. Ask which branches matter and which to skip. Prune aggressively — most of the value is in cutting low-stakes branches before they ever become questions. Two branches always stay:
-
-- **The done check:** what runnable check proves the work is done (a test command, a build exit code, a file count, an empty queue).
-- **What varies later:** for every named third party, vendor, or fixed choice in the plan, ask "default or only?" and "at what grain can it vary later: platform, tenant, workspace, step, or per request?" Name where the seam is.
+Before asking anything, enumerate the open decisions as a short list and show it to me. Ask which branches matter and which to skip. Prune aggressively — most of the value is in cutting low-stakes branches before they ever become questions. One branch always stays: what runnable check proves the work is done (a test command, a build exit code, a file count, an empty queue).
 
 ### Only ask questions that change something
 
@@ -88,7 +85,7 @@ When the user reaches for a vague or overloaded word, push for a precise canonic
 
 When domain relationships come up, invent specific scenarios that probe the edges. Force the user to be exact about where one concept stops and the next begins.
 
-For every one-to-one relationship the design assumes (one key per tenant, one vendor per deployment, one config per session), run one "two at once" scenario: two vendors in one tenant, two workspaces wanting different ones, two long-lived sessions straddling a config change. If one sentence shows the design failing it, that is a question for me, not a default to state and move past.
+For every vendor, fixed choice, or one-to-one relationship the plan assumes (one vendor per deployment, one key per tenant, one config per session), run a "two at once" scenario: two vendors in one tenant, two sessions straddling a config change. If one sentence shows the design failing it, that is a question for me, not a default: is the choice the default or the only one, and at what grain can it vary later (platform, tenant, step, request)?
 
 ### Check claims against the code
 
