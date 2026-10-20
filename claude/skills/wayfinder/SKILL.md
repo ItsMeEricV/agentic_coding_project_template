@@ -176,3 +176,4 @@ User invokes with a map whose way is clear (no open tickets, nothing left in **N
 - Tasks inside one ticket stay serial.
 - PRs merge in dependency order. The user's review bandwidth is the real limit, not the graph: say in the roadmap how many tickets to run at once, two or three, and prefer finishing a wave over starting the next.
 - When a ticket merges, its dependents' native links resolve on their own, and the **Can start when** text stays correct because it states a condition rather than a status. No body edits are needed on merge.
+- A row whose design is "written through `deep-discuss`" means its planning session runs that skill with the user before writing the RFC. Whoever accepts the plan checks for the skill's artifacts, a `KNOWLEDGE.md` diff and an RFC recording why each choice was made, before presenting a decision list. A session that finds one of those decisions wrong follows [its reopening rule](../deep-discuss/SKILL.md#decisions-reopen-only-here).
