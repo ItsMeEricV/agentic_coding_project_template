@@ -967,8 +967,12 @@ class MajorJumpTests(unittest.TestCase):
         ]
         self.assertEqual(self._jumps(rows), {"opus": "anthropic/claude-opus-6"})
 
-    def test_a_preview_of_the_next_major_never_outranks_a_final_release(self):
+    def test_a_preview_of_the_next_major_is_a_jump_from_a_final_release(self):
         preview = _cat("anthropic/claude-opus-6-preview", created=SEP_2026)
+        self.assertEqual(self._jumps([preview]), {"opus": "anthropic/claude-opus-6-preview"})
+
+    def test_a_preview_of_the_current_major_is_not_a_jump(self):
+        preview = _cat("anthropic/claude-opus-5.6-preview", created=SEP_2026)
         self.assertEqual(self._jumps([preview]), {})
 
     def test_a_preview_entry_jumps_to_the_next_major_preview(self):

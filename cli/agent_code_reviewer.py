@@ -64,11 +64,12 @@ Version Check:
   /tmp/agent_reviewer_catalog_<roster hash>.json; editing the roster refetches.
   Two kinds of listing after the roster's `catalog_reviewed` date block every
   review run (exit 5) until someone weighs them and moves the date: a higher
-  major version of an entry's family (claude-opus-5.5 -> claude-opus-6), and a
-  family the roster does not use from a vendor it does (gemini-4-argon). A
-  minor bump (grok-4.6 -> grok-4.7) is a stderr note on the fetching run. An
-  unreachable catalog never blocks: the stale cache stands, or the check is
-  skipped. --skip-version-check skips the whole check for one run.
+  major version of an entry's family, preview or final (claude-opus-5.5 ->
+  claude-opus-6), and a family the roster does not use from a vendor it does
+  (gemini-4-argon). A minor bump (grok-4.6 -> grok-4.7) is a stderr note on
+  the fetching run. An unreachable catalog never blocks: the stale cache
+  stands, or the check is skipped. --skip-version-check skips the whole check
+  for one run.
 
 Conversation History:
   - One file per roster entry: /tmp/agent_reviewer_<key>.json
@@ -656,8 +657,10 @@ def check_versions(roster: Roster, catalog: list[CatalogModel]) -> list[VersionR
 
 def major_jumps(roster: Roster, catalog: list[CatalogModel]) -> list[VersionReport]:
     """Entries whose family gained a higher major version (`opus-5.5` -> `opus-6`)
-    after `catalog_reviewed`, each with the newest such id. Gated on the listing
-    date so that declining the jump and moving the date settles it."""
+    after `catalog_reviewed`, each with the newest such id. A preview counts:
+    vendors ship majors as months-long previews, and _is_newer's rule against
+    previews guards bump suggestions, not news. Gated on the listing date so
+    that declining the jump and moving the date settles it."""
     pinned = _pinned(catalog)
     cutoff = _review_cutoff(roster)
     reports: list[VersionReport] = []
@@ -665,11 +668,13 @@ def major_jumps(roster: Roster, catalog: list[CatalogModel]) -> list[VersionRepo
         current = _resolve(entry, pinned)
         if current is None or not model_family(current.id)[1]:
             continue
-        major = model_family(current.id)[1][:1]
+        family, version = model_family(current.id)
         jumps = [
             m
-            for m in _newer(current, pinned)
-            if m.created >= cutoff and model_family(m.id)[1][:1] > major
+            for m in pinned
+            if m.created >= cutoff
+            and model_family(m.id)[0] == family
+            and model_family(m.id)[1][:1] > version[:1]
         ]
         if jumps:
             newest = _latest(jumps)
