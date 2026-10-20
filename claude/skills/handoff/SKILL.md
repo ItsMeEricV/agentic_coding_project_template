@@ -13,7 +13,9 @@ Pick a short kebab-case slug (2–5 words) describing the handoff's focus, deriv
     find "$dir" -name 'handoff-*.md' -mtime +14 -delete
     echo "$dir/handoff-$(date +%Y%m%d)-<slug>.md"
 
-Write the doc to the printed path with your file-writing tool; a new file needs no prior read. Example: `~/code/app/.handoffs/handoff-20260516-fitness-tracker-cli-migration.md`. The date prefix keeps multiple handoffs chronologically sortable; the slug makes the file's purpose obvious from `ls`.
+That is bash, which pi uses on every OS and Claude Code uses on macOS, Linux, and Windows with Git Bash. In a PowerShell-only session, take the same four steps with PowerShell's own commands.
+
+Write the doc to the printed path with your file-writing tool; a new file needs no prior read. Example: `<repo root>/.handoffs/handoff-20260516-fitness-tracker-cli-migration.md`. The date prefix keeps multiple handoffs chronologically sortable; the slug makes the file's purpose obvious from `ls`.
 
 Why there, and not `/tmp` (cleared at reboot) or `.git/` (write-protected in Claude Code and Codex):
 
