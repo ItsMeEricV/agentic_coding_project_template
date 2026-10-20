@@ -68,9 +68,11 @@ Version Check:
   does not use from a vendor it does (gemini-4-argon). A minor bump
   (grok-4.6 -> grok-4.7) is reported on the fetching run only. A review run
   prints the report to stderr and carries on; --catalog-notice prints it to
-  stdout for the session-start hook in .claude/settings.json, so it reaches
-  the user however deep the reviewing agent ran. An unreachable catalog skips
-  the check. --skip-version-check skips it for one run.
+  stdout for the session-start adapters (.claude/hooks/catalog-notice.sh for
+  Claude Code, .pi/extensions/catalog-notice.ts for pi), so it reaches the user
+  however deep the reviewing agent ran. A failed fetch is reported, never
+  fatal: the stale cache stands, or the check is skipped. --skip-version-check
+  skips the check for one run.
 
 Conversation History:
   - One file per roster entry: /tmp/agent_reviewer_<key>.json
@@ -818,39 +820,44 @@ def catalog_cache_path(roster_bytes: bytes, state_dir: Path = STATE_DIR) -> Path
 
 def load_cached_catalog(
     cache: Path, now: float, fetch: Callable[[], JsonDict]
-) -> tuple[list[CatalogModel] | None, bool]:
-    """The catalog, and whether this call fetched it. A cache under a day old is
-    used as-is; an older one is refetched, or kept when the fetch fails. None
-    only when the fetch fails with nothing cached."""
+) -> tuple[list[CatalogModel] | None, bool, str]:
+    """The catalog, whether this call fetched it, and the failure when a fetch
+    failed. A cache under a day old is used as-is; an older one is refetched, or
+    kept when the fetch fails. None only when the fetch fails with nothing cached."""
     cached: JsonDict | None = None
     try:
         cached = json.loads(cache.read_text())
     except (OSError, json.JSONDecodeError):
         pass  # missing or corrupt: fetch as if never cached
     if cached is not None and now - cached.get("fetched", 0) < VERSION_CHECK_INTERVAL_SECONDS:
-        return parse_openrouter_catalog(cached.get("payload", {})), False
+        return parse_openrouter_catalog(cached.get("payload", {})), False, ""
     try:
         payload = fetch()
     except (urllib.error.URLError, json.JSONDecodeError, OSError) as exc:
-        outcome = "using the cached copy" if cached is not None else "check skipped"
-        print(f"--> Version check: catalog unreachable ({exc}); {outcome}.", file=sys.stderr)
         if cached is None:
-            return None, False
-        return parse_openrouter_catalog(cached.get("payload", {})), False
+            problem = (
+                f"could not fetch the catalog ({exc}) and none is cached, so models "
+                "newer than the roster go unreported until it is reachable"
+            )
+            return None, False, problem
+        fetched_on = time.strftime("%Y-%m-%d", time.gmtime(cached.get("fetched", 0)))
+        problem = f"could not fetch the catalog ({exc}); this uses the copy from {fetched_on}"
+        return parse_openrouter_catalog(cached.get("payload", {})), False, problem
     cache.write_text(json.dumps({"fetched": now, "payload": payload}))
-    return parse_openrouter_catalog(payload), True
+    return parse_openrouter_catalog(payload), True, ""
 
 
 def catalog_check(roster: Roster, cache: Path, now: float, fetch: Callable[[], JsonDict]) -> str:
     """What the user should hear about the roster: on every run, the major jumps
     and new families listed after `catalog_reviewed`; on the day's fetching run,
-    also newer minor ids. Empty when there is nothing to say."""
-    catalog, fetched = load_cached_catalog(cache, now, fetch)
+    also newer minor ids. A failed fetch is reported too, so a broken check never
+    reads as a quiet day. Empty when there is nothing to say."""
+    catalog, fetched, problem = load_cached_catalog(cache, now, fetch)
+    parts = [f"Catalog check problem: {problem}."] if problem else []
     if catalog is None:
-        return ""
+        return "\n\n".join(parts)
     jumps = major_jumps(roster, catalog)
     found = new_families(roster, catalog)
-    parts = []
     if jumps or found:
         sections = []
         if jumps:

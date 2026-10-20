@@ -5,8 +5,6 @@ Run with: python3 -m unittest cli.test_agent_code_reviewer -v
 
 from __future__ import annotations
 
-import contextlib
-import io
 import sys
 import tempfile
 import unittest
@@ -1015,37 +1013,34 @@ class CatalogCheckTests(unittest.TestCase):
         self.assertNotEqual(other, self.cache)
 
     def test_a_cache_under_a_day_old_skips_the_fetch(self):
-        _, fetched = load_cached_catalog(self.cache, self.NOW, self._fetch)
+        _, fetched, _ = load_cached_catalog(self.cache, self.NOW, self._fetch)
         self.assertTrue(fetched)
-        catalog, fetched = load_cached_catalog(self.cache, self.NOW + DAY - 1, self._fetch)
+        catalog, fetched, _ = load_cached_catalog(self.cache, self.NOW + DAY - 1, self._fetch)
         self.assertFalse(fetched)
         self.assertEqual(self.fetches, 1)
         self.assertTrue(catalog)
 
     def test_a_day_old_cache_is_refetched(self):
         load_cached_catalog(self.cache, self.NOW, self._fetch)
-        _, fetched = load_cached_catalog(self.cache, self.NOW + DAY, self._fetch)
+        _, fetched, _ = load_cached_catalog(self.cache, self.NOW + DAY, self._fetch)
         self.assertTrue(fetched)
         self.assertEqual(self.fetches, 2)
 
-    def test_an_unreachable_catalog_keeps_the_stale_cache(self):
+    def test_an_unreachable_catalog_keeps_the_stale_cache_and_says_so(self):
         load_cached_catalog(self.cache, self.NOW, self._fetch)
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err):
-            catalog, fetched = load_cached_catalog(
-                self.cache, self.NOW + 2 * DAY, self._unreachable
-            )
+        catalog, fetched, problem = load_cached_catalog(
+            self.cache, self.NOW + 2 * DAY, self._unreachable
+        )
         self.assertTrue(catalog)
         self.assertFalse(fetched)
-        self.assertIn("using the cached copy", err.getvalue())
+        self.assertIn("this uses the copy from 2026-09-22", problem)
 
-    def test_an_unreachable_catalog_with_no_cache_skips_the_check(self):
-        with contextlib.redirect_stderr(io.StringIO()):
-            result = load_cached_catalog(self.cache, self.NOW, self._unreachable)
-            self.assertEqual(result, (None, False))
-            self.assertEqual(
-                catalog_check(_family_roster(), self.cache, self.NOW, self._unreachable), ""
-            )
+    def test_an_unreachable_catalog_with_no_cache_is_reported_not_silent(self):
+        catalog, _, problem = load_cached_catalog(self.cache, self.NOW, self._unreachable)
+        self.assertIsNone(catalog)
+        self.assertIn("none is cached", problem)
+        report = catalog_check(_family_roster(), self.cache, self.NOW, self._unreachable)
+        self.assertIn("Catalog check problem: could not fetch the catalog (", report)
 
     def test_a_jump_or_new_family_is_reported_every_run_until_the_date_moves(self):
         for now in (self.NOW, self.NOW + 60):
