@@ -1,6 +1,6 @@
 # Roster maintenance
 
-Read this only when the user asks to add, bump, or audit a model in `cli/agent_reviewer.toml`, or the script exits 5. Never edit the roster unprompted: an entry commits a model choice to the repo for every future run.
+Read this only when the user asks to add, bump, or audit a model in `cli/agent_reviewer.toml`, or a catalog check report asks them to. Never edit the roster unprompted: an entry commits a model choice to the repo for every future run.
 
 ## Checking for newer versions
 
@@ -12,9 +12,9 @@ uv run cli/agent_code_reviewer.py --check-versions
 
 It reports two things. First, a same-family id listed later (`claude-opus-5` → `claude-opus-5.5`), with both listing dates, window, and price. The listing date decides, not the version number: xAI's `grok-4.20` predates `grok-4.6`. Second, a **new family**: a model from a vendor the roster already uses, under a name no entry carries (`gemini-4-argon` beside `gemini-3.1-pro`). A suffix makes a separate family, so `gpt-6.1-sol-pro` is never offered as an upgrade of `gpt-6.1-sol`.
 
-On a review run, a minor bump is a stderr note and the run carries on. A **major jump** (`claude-opus-5.5` → `claude-opus-6`, preview or final) or a new family, listed after the roster's `catalog_reviewed` date, exits 5 until it is settled.
+Review runs report these on stderr and carry on, and a `SessionStart` hook in `.claude/settings.json` runs `--catalog-notice` to show the same report to the user at the start of each session. A minor bump is reported once a day. A **major jump** (`claude-opus-5.5` → `claude-opus-6`, preview or final) or a new family, listed after the roster's `catalog_reviewed` date, is reported on every run until it is settled.
 
-Settling exit 5 is the user's call. Show them the tables, and for each model they want, bump or add the entry (below). Then set `catalog_reviewed` to today, even if they declined everything: the date records that someone looked. Report only — the script never edits the roster. Bump `id`, `name`, and `context_window` together, and only when the user asks.
+Settling it is the user's call. Show them the tables, and for each model they want, bump or add the entry (below). Then set `catalog_reviewed` to today, even if they declined everything: the date records that someone looked. Report only — the script never edits the roster. Bump `id`, `name`, and `context_window` together, and only when the user asks.
 
 ## Adding a model
 

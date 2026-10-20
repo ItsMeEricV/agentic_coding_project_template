@@ -11,10 +11,11 @@
 default = "codex-sol"
 
 # The day the model catalog was last weighed against this roster. A listing
-# after it that could change an entry blocks review runs with exit 5: a higher
-# major version of an entry's family (`claude-opus-5.5` -> `claude-opus-6`), or
-# a family no entry uses from a vendor below (`gemini-4-argon` beside
-# `gemini-3.1-pro`). Decide, then move the date; declining counts.
+# after it that could change an entry is reported at every session start and on
+# every review run: a higher major version of an entry's family
+# (`claude-opus-5.5` -> `claude-opus-6`), or a family no entry uses from a
+# vendor below (`gemini-4-argon` beside `gemini-3.1-pro`). Decide, then move
+# the date; declining counts.
 catalog_reviewed = 2026-10-20
 
 # Each entry declares:

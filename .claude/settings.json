@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "out=$(uv run \"$CLAUDE_PROJECT_DIR\"/cli/agent_code_reviewer.py --catalog-notice 2>/dev/null) && [ -n \"$out\" ] && jq -n --arg m \"$out\" '{systemMessage: $m, hookSpecificOutput: {hookEventName: \"SessionStart\", additionalContext: $m}}'; exit 0",
+            "timeout": 30,
+            "statusMessage": "Checking the reviewer model catalog"
+          }
+        ]
+      }
+    ]
+  }
+}

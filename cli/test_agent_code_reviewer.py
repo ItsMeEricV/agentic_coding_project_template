@@ -25,13 +25,13 @@ from agent_code_reviewer import (  # noqa: E402
     SLICE_GATE_TOKENS,
     ConfigError,
     FocusArea,
-    UnreviewedCatalogError,
     FocusRecord,
     _build_line_content_index,
     _path_matches_any,
     annotate_diff_with_line_numbers,
     build_pr_prompt,
     catalog_cache_path,
+    catalog_check,
     check_versions,
     churn_by_file,
     diff_char_budget,
@@ -60,7 +60,6 @@ from agent_code_reviewer import (  # noqa: E402
     parse_config,
     parse_focus_areas,
     parse_openrouter_catalog,
-    version_gate,
 )
 
 
@@ -989,7 +988,7 @@ GATE_CATALOG = {
 }
 
 
-class VersionGateTests(unittest.TestCase):
+class CatalogCheckTests(unittest.TestCase):
     NOW = float(SEP_2026 + DAY)
 
     def setUp(self):
@@ -1007,12 +1006,8 @@ class VersionGateTests(unittest.TestCase):
     def _unreachable(self):
         raise urllib.error.URLError("offline")
 
-    def _gate(self, roster, now):
-        """Runs version_gate; returns what it wrote to stderr."""
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err):
-            version_gate(roster, self.cache, now, self._fetch)
-        return err.getvalue()
+    def _check(self, roster, now):
+        return catalog_check(roster, self.cache, now, self._fetch)
 
     def test_cache_is_per_roster_content(self):
         other = catalog_cache_path(b"edited roster", Path(self._dir.name))
@@ -1048,32 +1043,33 @@ class VersionGateTests(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()):
             result = load_cached_catalog(self.cache, self.NOW, self._unreachable)
             self.assertEqual(result, (None, False))
-            version_gate(_family_roster(), self.cache, self.NOW, self._unreachable)
+            self.assertEqual(
+                catalog_check(_family_roster(), self.cache, self.NOW, self._unreachable), ""
+            )
 
-    def test_a_jump_or_new_family_blocks_every_run_until_the_date_moves(self):
+    def test_a_jump_or_new_family_is_reported_every_run_until_the_date_moves(self):
         for now in (self.NOW, self.NOW + 60):
-            with self.subTest(now=now), self.assertRaises(UnreviewedCatalogError) as ctx:
-                self._gate(_family_roster(), now)
-            message = str(ctx.exception)
-            self.assertIn("Major version jumps:", message)
-            self.assertIn("anthropic/claude-opus-6", message)
-            self.assertIn("New families:", message)
-            self.assertIn("google/gemini-4-argon", message)
-            self.assertIn("catalog_reviewed = 2026-04-30", message)
+            with self.subTest(now=now):
+                report = self._check(_family_roster(), now)
+                self.assertIn("Model catalog review pending", report)
+                self.assertIn("Major version jumps:", report)
+                self.assertIn("anthropic/claude-opus-6", report)
+                self.assertIn("New families:", report)
+                self.assertIn("google/gemini-4-argon", report)
+                self.assertIn("catalog_reviewed = 2026-04-30", report)
         self.assertEqual(self.fetches, 1)
-        self._gate(_family_roster(reviewed=date(2026, 9, 21)), self.NOW + 120)
+        settled = _family_roster(reviewed=date(2026, 9, 21))
+        self.assertEqual(self._check(settled, self.NOW + 120), "")
 
-    def test_a_blocked_jump_is_not_repeated_in_the_stale_note(self):
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err), self.assertRaises(UnreviewedCatalogError):
-            version_gate(_family_roster(), self.cache, self.NOW, self._fetch)
-        self.assertNotIn("claude-opus-6", err.getvalue())
+    def test_a_flagged_jump_is_not_repeated_in_the_stale_note(self):
+        self.assertEqual(self._check(_family_roster(), self.NOW).count("claude-opus-6"), 1)
 
     def test_stale_entries_are_noted_only_on_the_fetching_run(self):
         roster = _family_roster(reviewed=date(2026, 10, 1))
-        first = self._gate(roster, self.NOW)
+        first = self._check(roster, self.NOW)
+        self.assertNotIn("review pending", first)
         self.assertIn("anthropic/claude-opus-6", first)
-        self.assertEqual(self._gate(roster, self.NOW + 60), "")
+        self.assertEqual(self._check(roster, self.NOW + 60), "")
 
 
 class BuildPrPromptTests(unittest.TestCase):

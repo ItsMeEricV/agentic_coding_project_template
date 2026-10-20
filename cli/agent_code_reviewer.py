@@ -59,17 +59,18 @@ PR Review Mode (--pr):
   PR head, and has had fewer than three slices since (exit 4 otherwise).
 
 Version Check:
-  A review run (a message or --pr) fetches OpenRouter's public catalog at most
-  once a day per roster (~1 MB, no key), cached at
+  A review run (a message or --pr) and --catalog-notice fetch OpenRouter's
+  public catalog at most once a day per roster (~1 MB, no key), cached at
   /tmp/agent_reviewer_catalog_<roster hash>.json; editing the roster refetches.
-  Two kinds of listing after the roster's `catalog_reviewed` date block every
-  review run (exit 5) until someone weighs them and moves the date: a higher
-  major version of an entry's family, preview or final (claude-opus-5.5 ->
-  claude-opus-6), and a family the roster does not use from a vendor it does
-  (gemini-4-argon). A minor bump (grok-4.6 -> grok-4.7) is a stderr note on
-  the fetching run. An unreachable catalog never blocks: the stale cache
-  stands, or the check is skipped. --skip-version-check skips the whole check
-  for one run.
+  Until the roster's `catalog_reviewed` date moves past them, every such run
+  reports two kinds of listing: a higher major version of an entry's family,
+  preview or final (claude-opus-5.5 -> claude-opus-6), and a family the roster
+  does not use from a vendor it does (gemini-4-argon). A minor bump
+  (grok-4.6 -> grok-4.7) is reported on the fetching run only. A review run
+  prints the report to stderr and carries on; --catalog-notice prints it to
+  stdout for the session-start hook in .claude/settings.json, so it reaches
+  the user however deep the reviewing agent ran. An unreachable catalog skips
+  the check. --skip-version-check skips it for one run.
 
 Conversation History:
   - One file per roster entry: /tmp/agent_reviewer_<key>.json
@@ -117,8 +118,6 @@ Exit codes:
   4  a slice run (--only-path / --ignore-path) the whole-diff pass did not
      earn: no pass yet, PR head moved, no nomination under 150K tokens, or
      three slices already ran
-  5  the catalog lists a major version or model family first listed after the
-     roster's `catalog_reviewed`; the message names each one
 """
 
 from __future__ import annotations
@@ -289,10 +288,6 @@ class DiffTooLargeError(Exception):
 
 class SliceGateError(Exception):
     """A slice run the whole pass did not earn. main() exits 4."""
-
-
-class UnreviewedCatalogError(Exception):
-    """A major version or family listed after `catalog_reviewed`. main() exits 5."""
 
 
 MAX_FOCUS_AREAS: int = 3
@@ -810,6 +805,10 @@ def fetch_openrouter_catalog(url: str = OPENROUTER_CATALOG_URL, timeout: int = 3
         return json.loads(resp.read().decode("utf-8"))
 
 
+def _fetch_for_check() -> JsonDict:
+    return fetch_openrouter_catalog(timeout=VERSION_CHECK_TIMEOUT_SECONDS)
+
+
 def catalog_cache_path(roster_bytes: bytes, state_dir: Path = STATE_DIR) -> Path:
     """Keyed by roster content: each repo's roster gets its own daily check, and
     editing the roster checks again at once."""
@@ -842,44 +841,43 @@ def load_cached_catalog(
     return parse_openrouter_catalog(payload), True
 
 
-def version_gate(roster: Roster, cache: Path, now: float, fetch: Callable[[], JsonDict]) -> None:
-    """Runs before a review. The day's fetching run notes stale entries on stderr;
-    every run raises UnreviewedCatalogError while a major jump or new family is
-    unweighed."""
+def catalog_check(roster: Roster, cache: Path, now: float, fetch: Callable[[], JsonDict]) -> str:
+    """What the user should hear about the roster: on every run, the major jumps
+    and new families listed after `catalog_reviewed`; on the day's fetching run,
+    also newer minor ids. Empty when there is nothing to say."""
     catalog, fetched = load_cached_catalog(cache, now, fetch)
     if catalog is None:
-        return
+        return ""
     jumps = major_jumps(roster, catalog)
+    found = new_families(roster, catalog)
+    parts = []
+    if jumps or found:
+        sections = []
+        if jumps:
+            sections.append(f"Major version jumps:\n{format_version_report(jumps)}")
+        if found:
+            sections.append(f"New families:\n{format_new_families(found)}")
+        parts.append(
+            "Model catalog review pending: listed after the roster's catalog_reviewed = "
+            f"{roster.catalog_reviewed} ({CONFIG_PATH.name}).\n\n"
+            + "\n\n".join(sections)
+            + "\n\nTell the user. They decide whether any should replace a roster entry, "
+            "then catalog_reviewed moves to today, declining included. Do not edit the "
+            "roster unasked."
+        )
     if fetched:
-        blocked = {r.entry.key for r in jumps}
+        flagged = {r.entry.key for r in jumps}
         stale = [
             r
             for r in check_versions(roster, catalog)
-            if (r.newest or not r.in_catalog) and r.entry.key not in blocked
+            if (r.newest or not r.in_catalog) and r.entry.key not in flagged
         ]
         if stale:
-            print(
-                "--> Daily version check: roster entries with a newer same-family id or "
-                "no catalog listing (bump only on the user's say-so):\n"
-                f"{format_version_report(stale)}",
-                file=sys.stderr,
+            parts.append(
+                "Newer same-family ids, or entries the catalog does not list (bump only "
+                f"on the user's say-so):\n{format_version_report(stale)}"
             )
-    found = new_families(roster, catalog)
-    sections = []
-    if jumps:
-        sections.append(f"Major version jumps:\n{format_version_report(jumps)}")
-    if found:
-        sections.append(f"New families:\n{format_new_families(found)}")
-    if sections:
-        raise UnreviewedCatalogError(
-            "the catalog lists models first listed after the roster's "
-            f"catalog_reviewed = {roster.catalog_reviewed}:\n\n"
-            + "\n\n".join(sections)
-            + "\n\nWeigh each against the roster entry it could replace (--find-model "
-            f"prints its ids), then set catalog_reviewed in {CONFIG_PATH.name} to today; "
-            "declining counts. --skip-version-check defers this for one run; only the "
-            "user should pass it."
-        )
+    return "\n\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -2100,9 +2098,16 @@ def main() -> None:
         "--skip-version-check",
         dest="skip_version_check",
         action="store_true",
+        help="Skip this review run's daily catalog check: no fetch, no report.",
+    )
+    parser.add_argument(
+        "--catalog-notice",
+        dest="catalog_notice",
+        action="store_true",
         help=(
-            "Skip this run's daily catalog check, including its exit-5 block on a "
-            "major version or model family listed after the roster's catalog_reviewed."
+            "Run the daily catalog check, print its report to stdout, and exit 0; print "
+            "nothing when there is nothing to report. For a session-start hook, so the "
+            "report reaches the user however deep the reviewing agent ran. Needs no API key."
         ),
     )
     parser.add_argument(
@@ -2203,6 +2208,12 @@ def main() -> None:
             else:
                 print(f"No new families since catalog_reviewed = {roster.catalog_reviewed}.")
             return
+        if args.catalog_notice:
+            cache = catalog_cache_path(CONFIG_PATH.read_bytes())
+            notice = catalog_check(roster, cache, time.time(), _fetch_for_check)
+            if notice:
+                print(notice)
+            return
         entry = roster.get(args.model_key) if args.model_key else roster.default_entry()
     except ConfigError as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -2236,16 +2247,9 @@ def main() -> None:
 
     if (message or args.pr_number) and not args.skip_version_check:
         cache = catalog_cache_path(CONFIG_PATH.read_bytes())
-        try:
-            version_gate(
-                roster,
-                cache,
-                time.time(),
-                lambda: fetch_openrouter_catalog(timeout=VERSION_CHECK_TIMEOUT_SECONDS),
-            )
-        except UnreviewedCatalogError as exc:
-            print(f"Error: {exc}", file=sys.stderr)
-            sys.exit(5)
+        notice = catalog_check(roster, cache, time.time(), _fetch_for_check)
+        if notice:
+            print(f"--> Catalog check:\n{notice}", file=sys.stderr)
 
     # Anything past this point will call the model's API.
     if not adapter.api_key():
