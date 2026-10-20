@@ -1,6 +1,6 @@
 ---
 name: deep-discuss
-description: Interview the user relentlessly about a plan or design until reaching shared understanding, resolving each branch of the decision tree. Stress-tests the plan against the project's documented language (KNOWLEDGE.md) and recorded decisions (RFCs), updating both inline as decisions firm up. Use when the user wants to stress-test a plan, get grilled on their design, or mentions "deep discussion".
+description: Interview the user relentlessly about a plan or design until reaching shared understanding, resolving each branch of the decision tree. Stress-tests the plan against the project's documented language (KNOWLEDGE.md) and recorded decisions (RFCs), updating both inline as decisions firm up. Use when the user wants to stress-test a plan, get grilled on their design, or mentions "deep discussion", and when a roadmap row or planning handoff says a design is written through deep-discuss.
 ---
 
 ## What to do
@@ -13,7 +13,10 @@ If a question can be answered by exploring the codebase, explore the codebase in
 
 ### Scope the tree before grilling
 
-Before asking anything, enumerate the open decisions as a short list and show it to me. Ask which branches matter and which to skip. Prune aggressively — most of the value is in cutting low-stakes branches before they ever become questions. One branch always stays: what runnable check proves the work is done (a test command, a build exit code, a file count, an empty queue).
+Before asking anything, enumerate the open decisions as a short list and show it to me. Ask which branches matter and which to skip. Prune aggressively — most of the value is in cutting low-stakes branches before they ever become questions. Two branches always stay:
+
+- **The done check:** what runnable check proves the work is done (a test command, a build exit code, a file count, an empty queue).
+- **What varies later:** for every named third party, vendor, or fixed choice in the plan, ask "default or only?" and "at what grain can it vary later: platform, tenant, workspace, step, or per request?" Name where the seam is.
 
 ### Only ask questions that change something
 
@@ -85,6 +88,8 @@ When the user reaches for a vague or overloaded word, push for a precise canonic
 
 When domain relationships come up, invent specific scenarios that probe the edges. Force the user to be exact about where one concept stops and the next begins.
 
+For every one-to-one relationship the design assumes (one key per tenant, one vendor per deployment, one config per session), run one "two at once" scenario: two vendors in one tenant, two workspaces wanting different ones, two long-lived sessions straddling a config change. If one sentence shows the design failing it, that is a question for me, not a default to state and move past.
+
 ### Check claims against the code
 
 When the user states how something works, verify it against the actual code. If they disagree, surface it: "The code cancels whole Orders, but you just described partial cancellation — which is the real behavior?"
@@ -116,3 +121,7 @@ If any one is missing, skip the RFC. Follow [RFC-FORMAT.md](./RFC-FORMAT.md).
 ### Close by naming the execution shape
 
 Finish with one line on how the work should run, then stop and let me choose. Default is a one-shot plan in plan mode. Recommend `/goal <condition>` only when all three hold: the done check from the tree is something a command can prove, the work splits into one-item iterations on a branch, and no step inside the loop is irreversible (deploys, migrations, force-pushes). Recommend `/loop` only when the work is waiting on something external (CI, a deploy, a PR). Give the reason in one sentence. If I already named a mode, don't re-ask. This verdict is conversation output: it never goes in `KNOWLEDGE.md`, and it earns an RFC only by the three-part test above.
+
+### Decisions reopen only here
+
+A decision recorded through this skill, in `KNOWLEDGE.md` or an RFC, is reopened only through this skill, with me. A planner, reviewer, or executor who finds it wrong stops and brings it back here rather than choosing a replacement. A reviewer's objection is input to that interview, never a stand-in for it.
