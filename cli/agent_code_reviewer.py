@@ -659,6 +659,19 @@ def fetch_openrouter_catalog(url: str = OPENROUTER_CATALOG_URL) -> dict:
 # turn-and-save cycle. History-file layout is shared: one file per roster entry.
 
 
+def is_transient(exc: BaseException) -> bool:
+    """429, 5xx, or a timeout, from urllib or from an SDK that exposes
+    `status_code`. Duck-typed so the OpenRouter SDK need not be importable."""
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in RETRYABLE_STATUS
+    if isinstance(exc, (urllib.error.URLError, TimeoutError)):
+        return True
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        return status in RETRYABLE_STATUS
+    return "Timeout" in type(exc).__name__
+
+
 class Adapter(ABC):
     """Strategy interface for one access method, bound to one roster entry."""
 
@@ -705,19 +718,6 @@ class Adapter(ABC):
     def extract_response(self, data: dict) -> tuple[str, str]:
         """Returns (visible_text, opaque_signature). Signature is access-method
         specific and threaded back into the next turn's history record."""
-
-
-def is_transient(exc: BaseException) -> bool:
-    """429, 5xx, or a timeout, from urllib or from an SDK that exposes
-    `status_code`. Duck-typed so the OpenRouter SDK need not be importable."""
-    if isinstance(exc, urllib.error.HTTPError):
-        return exc.code in RETRYABLE_STATUS
-    if isinstance(exc, (urllib.error.URLError, TimeoutError)):
-        return True
-    status = getattr(exc, "status_code", None)
-    if isinstance(status, int):
-        return status in RETRYABLE_STATUS
-    return "Timeout" in type(exc).__name__
 
     # Shared history-file ops. The on-disk shape is the same everywhere
     # (entries list + session + per-entry timestamps); only the per-entry

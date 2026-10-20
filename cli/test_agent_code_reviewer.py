@@ -473,6 +473,26 @@ class RetryTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
 
 
+class HistoryTests(unittest.TestCase):
+    def test_every_adapter_has_history_methods(self):
+        cfg = load_config()
+        for entry in cfg.entries:
+            adapter = make_adapter(entry)
+            for name in ("history_file", "load_history", "save_history", "reset_history"):
+                self.assertTrue(callable(getattr(adapter, name, None)), f"{entry.key}.{name}")
+
+    def test_history_round_trip_scoped_by_session(self):
+        adapter = make_adapter(load_config().default_entry())
+        adapter.reset_history()
+        self.assertEqual(adapter.load_history(session="s1"), [])
+        msgs = adapter.add_message([], "user", "hello")
+        adapter.save_history(msgs, session="s1")
+        self.assertEqual(adapter.load_history(session="s1"), msgs)
+        self.assertEqual(adapter.load_history(session=None), [])
+        adapter.reset_history()
+        self.assertEqual(adapter.load_history(session="s1"), [])
+
+
 class DedupeTests(unittest.TestCase):
     def test_drops_only_exact_path_and_line_matches(self):
         comments = [
