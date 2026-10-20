@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/catalog-notice.sh",
+            "timeout": 30,
+            "statusMessage": "Checking the reviewer model catalog"
+          }
+        ]
+      }
+    ]
+  }
+}

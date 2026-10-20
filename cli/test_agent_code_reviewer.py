@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 import urllib.error
+from datetime import date, datetime
 from email.message import Message
 from pathlib import Path
 
@@ -27,6 +28,8 @@ from agent_code_reviewer import (  # noqa: E402
     _path_matches_any,
     annotate_diff_with_line_numbers,
     build_pr_prompt,
+    catalog_cache_path,
+    catalog_check,
     check_versions,
     churn_by_file,
     diff_char_budget,
@@ -41,13 +44,17 @@ from agent_code_reviewer import (  # noqa: E402
     VersionReport,
     format_catalog,
     format_focus_section,
+    format_new_families,
     format_version_report,
     is_prerelease,
     is_transient,
+    load_cached_catalog,
     load_config,
     load_focus_file,
+    major_jumps,
     make_adapter,
     model_family,
+    new_families,
     parse_config,
     parse_focus_areas,
     parse_openrouter_catalog,
@@ -175,7 +182,7 @@ def _raw(models=None, default="a"):
         models = [
             {"key": "a", "name": "A", "access_method": "gemini_api", "id": "m-a"}
         ]
-    return {"default": default, "models": models}
+    return {"default": default, "catalog_reviewed": date(2026, 1, 1), "models": models}
 
 
 class ParseConfigTests(unittest.TestCase):
@@ -243,6 +250,21 @@ class ParseConfigTests(unittest.TestCase):
         del raw["default"]
         with self.assertRaises(ConfigError):
             parse_config(raw)
+
+    def test_catalog_reviewed_is_a_date(self):
+        self.assertEqual(parse_config(_raw()).catalog_reviewed, date(2026, 1, 1))
+
+    def test_rejects_missing_quoted_or_timestamped_catalog_reviewed(self):
+        for value in (None, "2026-01-01", datetime(2026, 1, 1, 12)):
+            with self.subTest(value=value):
+                raw = _raw()
+                if value is None:
+                    del raw["catalog_reviewed"]
+                else:
+                    raw["catalog_reviewed"] = value
+                with self.assertRaises(ConfigError) as ctx:
+                    parse_config(raw)
+                self.assertIn("catalog_reviewed", str(ctx.exception))
 
     def test_rejects_empty_roster(self):
         with self.assertRaises(ConfigError):
@@ -647,7 +669,7 @@ class FocusSectionTests(unittest.TestCase):
         self.assertIn("`apps/dispatcher-core/src/workflows/session-workflow.ts`", section)
 
 
-def _cat(id, context=1_000_000, alias="", prompt="0.000005", created=0):
+def _cat(id, context=1_000_000, alias="", prompt="0.000005", created=0, outputs=None):
     return {
         "id": id,
         "name": id,
@@ -655,6 +677,7 @@ def _cat(id, context=1_000_000, alias="", prompt="0.000005", created=0):
         "pricing": {"prompt": prompt, "completion": "0.00002"},
         **({"alias_target": {"slug": alias}} if alias else {}),
         **({"created": created} if created else {}),
+        **({"architecture": {"output_modalities": outputs}} if outputs else {}),
     }
 
 
@@ -835,6 +858,215 @@ class CheckVersionsByDateTests(unittest.TestCase):
         self.assertEqual(_newest_id(check_versions(roster, catalog)[0]), "v/m-1.10")
 
 
+DAY = 24 * 60 * 60
+
+
+def _family_roster(reviewed=date(2026, 4, 30), extra=()):
+    """A Gemini and a Claude entry, reviewed through `reviewed` (APR_2026's day)."""
+    def entry(key, access_method, id):
+        return {"key": key, "name": key, "access_method": access_method, "id": id}
+
+    entries = [
+        entry("gem", "gemini_api", "gemini-3.1-pro-preview"),
+        entry("opus", "openrouter", "anthropic/claude-opus-5.5"),
+        *extra,
+    ]
+    raw = _raw(entries, default="gem")
+    raw["catalog_reviewed"] = reviewed
+    return parse_config(raw)
+
+
+ROSTER_ROWS = [
+    _cat("google/gemini-3.1-pro-preview", created=MAR_2026),
+    _cat("anthropic/claude-opus-5.5", created=MAR_2026),
+]
+
+
+class NewFamiliesTests(unittest.TestCase):
+    def _found(self, rows, roster=None):
+        catalog = parse_openrouter_catalog({"data": ROSTER_ROWS + rows})
+        return new_families(roster or _family_roster(), catalog)
+
+    def test_flags_a_new_name_from_a_roster_vendor(self):
+        found = self._found([_cat("google/gemini-4-argon", created=SEP_2026)])
+        self.assertEqual(
+            [(f.family, f.newest.id) for f in found],
+            [("google/gemini-argon", "google/gemini-4-argon")],
+        )
+
+    def test_a_newer_version_of_a_roster_family_is_not_new(self):
+        self.assertEqual(self._found([_cat("anthropic/claude-opus-6", created=SEP_2026)]), [])
+
+    def test_the_reviewed_day_is_settled_and_the_next_day_is_not(self):
+        settled = _cat("anthropic/claude-fable-5", created=APR_2026 + DAY - 1)
+        self.assertEqual(self._found([settled]), [])
+        fresh = _cat("anthropic/claude-fable-5", created=APR_2026 + DAY)
+        self.assertEqual([f.family for f in self._found([fresh])], ["anthropic/claude-fable"])
+
+    def test_vendors_the_roster_does_not_use_are_ignored(self):
+        self.assertEqual(self._found([_cat("deepseek/deepseek-v5", created=SEP_2026)]), [])
+
+    def test_an_entry_missing_from_the_catalog_brings_no_vendor(self):
+        ghost = {"key": "grok", "name": "X", "access_method": "openrouter", "id": "x-ai/grok-9"}
+        rows = [_cat("x-ai/grok-build-1", created=SEP_2026)]
+        self.assertEqual(self._found(rows, _family_roster(extra=[ghost])), [])
+
+    def test_image_output_variants_aliases_and_batch_are_skipped(self):
+        rows = [
+            _cat("google/gemini-4-argon-image", created=SEP_2026, outputs=["image", "text"]),
+            _cat("google/gemma-5-31b-it:free", created=SEP_2026),
+            _cat("anthropic/claude-fable-5:batch", created=SEP_2026),
+            _cat("anthropic/claude-fable-latest", alias="anthropic/claude-fable-5"),
+        ]
+        self.assertEqual(self._found(rows), [])
+
+    def test_the_first_listing_dates_the_family_and_the_newest_id_leads(self):
+        rows = [
+            _cat("google/gemini-2.5-flash", created=MAR_2026),
+            _cat("google/gemini-4-flash", created=SEP_2026),
+            _cat("google/gemini-4-argon", created=AUG_2026),
+            _cat("google/gemini-4.1-argon", created=SEP_2026),
+        ]
+        found = self._found(rows)
+        self.assertEqual(
+            [(f.family, f.newest.id) for f in found],
+            [("google/gemini-argon", "google/gemini-4.1-argon")],
+        )
+        self.assertEqual(found[0].listed, AUG_2026)
+
+    def test_format_names_the_family_its_newest_id_and_first_listing(self):
+        text = format_new_families(self._found([_cat("google/gemini-4-argon", created=SEP_2026)]))
+        self.assertIn("NEW FAMILY", text)
+        self.assertIn("google/gemini-4-argon", text)
+        self.assertIn("2026-09-21", text)
+
+
+class MajorJumpTests(unittest.TestCase):
+    def _jumps(self, rows):
+        catalog = parse_openrouter_catalog({"data": ROSTER_ROWS + rows})
+        return {r.entry.key: _newest_id(r) for r in major_jumps(_family_roster(), catalog)}
+
+    def test_a_higher_major_after_the_review_date_is_a_jump(self):
+        jumps = self._jumps([_cat("anthropic/claude-opus-6", created=SEP_2026)])
+        self.assertEqual(jumps, {"opus": "anthropic/claude-opus-6"})
+
+    def test_a_minor_bump_is_not_a_jump(self):
+        self.assertEqual(self._jumps([_cat("anthropic/claude-opus-5.6", created=SEP_2026)]), {})
+
+    def test_a_major_listed_by_the_review_date_is_settled(self):
+        settled = _cat("anthropic/claude-opus-6", created=APR_2026 + DAY - 1)
+        self.assertEqual(self._jumps([settled]), {})
+
+    def test_the_newest_higher_major_leads_even_when_a_minor_is_newer(self):
+        rows = [
+            _cat("anthropic/claude-opus-6", created=AUG_2026),
+            _cat("anthropic/claude-opus-5.6", created=SEP_2026),
+        ]
+        self.assertEqual(self._jumps(rows), {"opus": "anthropic/claude-opus-6"})
+
+    def test_a_preview_of_the_next_major_is_a_jump_from_a_final_release(self):
+        preview = _cat("anthropic/claude-opus-6-preview", created=SEP_2026)
+        self.assertEqual(self._jumps([preview]), {"opus": "anthropic/claude-opus-6-preview"})
+
+    def test_a_preview_of_the_current_major_is_not_a_jump(self):
+        preview = _cat("anthropic/claude-opus-5.6-preview", created=SEP_2026)
+        self.assertEqual(self._jumps([preview]), {})
+
+    def test_a_preview_entry_jumps_to_the_next_major_preview(self):
+        preview = _cat("google/gemini-4-pro-preview", created=SEP_2026)
+        self.assertEqual(self._jumps([preview]), {"gem": "google/gemini-4-pro-preview"})
+
+
+GATE_CATALOG = {
+    "data": ROSTER_ROWS
+    + [
+        _cat("anthropic/claude-opus-6", created=AUG_2026),
+        _cat("google/gemini-4-argon", created=SEP_2026),
+    ]
+}
+
+
+class CatalogCheckTests(unittest.TestCase):
+    NOW = float(SEP_2026 + DAY)
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.cache = catalog_cache_path(b"roster", Path(self._dir.name))
+        self.fetches = 0
+
+    def tearDown(self):
+        self._dir.cleanup()
+
+    def _fetch(self):
+        self.fetches += 1
+        return GATE_CATALOG
+
+    def _unreachable(self):
+        raise urllib.error.URLError("offline")
+
+    def _check(self, roster, now):
+        return catalog_check(roster, self.cache, now, self._fetch)
+
+    def test_cache_is_per_roster_content(self):
+        other = catalog_cache_path(b"edited roster", Path(self._dir.name))
+        self.assertEqual(other.parent, self.cache.parent)
+        self.assertNotEqual(other, self.cache)
+
+    def test_a_cache_under_a_day_old_skips_the_fetch(self):
+        _, fetched, _ = load_cached_catalog(self.cache, self.NOW, self._fetch)
+        self.assertTrue(fetched)
+        catalog, fetched, _ = load_cached_catalog(self.cache, self.NOW + DAY - 1, self._fetch)
+        self.assertFalse(fetched)
+        self.assertEqual(self.fetches, 1)
+        self.assertTrue(catalog)
+
+    def test_a_day_old_cache_is_refetched(self):
+        load_cached_catalog(self.cache, self.NOW, self._fetch)
+        _, fetched, _ = load_cached_catalog(self.cache, self.NOW + DAY, self._fetch)
+        self.assertTrue(fetched)
+        self.assertEqual(self.fetches, 2)
+
+    def test_an_unreachable_catalog_keeps_the_stale_cache_and_says_so(self):
+        load_cached_catalog(self.cache, self.NOW, self._fetch)
+        catalog, fetched, problem = load_cached_catalog(
+            self.cache, self.NOW + 2 * DAY, self._unreachable
+        )
+        self.assertTrue(catalog)
+        self.assertFalse(fetched)
+        self.assertIn("this uses the copy from 2026-09-22", problem)
+
+    def test_an_unreachable_catalog_with_no_cache_is_reported_not_silent(self):
+        catalog, _, problem = load_cached_catalog(self.cache, self.NOW, self._unreachable)
+        self.assertIsNone(catalog)
+        self.assertIn("none is cached", problem)
+        report = catalog_check(_family_roster(), self.cache, self.NOW, self._unreachable)
+        self.assertIn("Catalog check problem: could not fetch the catalog (", report)
+
+    def test_a_jump_or_new_family_is_reported_every_run_until_the_date_moves(self):
+        for now in (self.NOW, self.NOW + 60):
+            with self.subTest(now=now):
+                report = self._check(_family_roster(), now)
+                self.assertIn("Model catalog review pending", report)
+                self.assertIn("Major version jumps:", report)
+                self.assertIn("anthropic/claude-opus-6", report)
+                self.assertIn("New families:", report)
+                self.assertIn("google/gemini-4-argon", report)
+                self.assertIn("catalog_reviewed = 2026-04-30", report)
+        self.assertEqual(self.fetches, 1)
+        settled = _family_roster(reviewed=date(2026, 9, 21))
+        self.assertEqual(self._check(settled, self.NOW + 120), "")
+
+    def test_a_flagged_jump_is_not_repeated_in_the_stale_note(self):
+        self.assertEqual(self._check(_family_roster(), self.NOW).count("claude-opus-6"), 1)
+
+    def test_stale_entries_are_noted_only_on_the_fetching_run(self):
+        roster = _family_roster(reviewed=date(2026, 10, 1))
+        first = self._check(roster, self.NOW)
+        self.assertNotIn("review pending", first)
+        self.assertIn("anthropic/claude-opus-6", first)
+        self.assertEqual(self._check(roster, self.NOW + 60), "")
+
+
 class BuildPrPromptTests(unittest.TestCase):
     def test_diff_only(self):
         prompt = build_pr_prompt("X", context_block="", extra_instructions="", context_files=[])
@@ -931,6 +1163,15 @@ CATALOG_PAYLOAD = {
 
 
 class CatalogParseTests(unittest.TestCase):
+    def test_text_only_reads_output_modalities_and_defaults_true(self):
+        rows = [
+            _cat("v/text"),
+            _cat("v/image", outputs=["image", "text"]),
+            _cat("v/t", outputs=["text"]),
+        ]
+        by_id = {m.id: m.text_only for m in parse_openrouter_catalog({"data": rows})}
+        self.assertEqual(by_id, {"v/text": True, "v/image": False, "v/t": True})
+
     def test_prices_are_converted_to_dollars_per_million_tokens(self):
         by_id = {m.id: m for m in parse_openrouter_catalog(CATALOG_PAYLOAD)}
         self.assertAlmostEqual(by_id["openai/gpt-6-astra"].prompt_price, 10.0)
