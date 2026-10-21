@@ -64,24 +64,29 @@ global/
 ├── AGENTS.md                             -> ~/.claude/CLAUDE.md  AND  ~/.pi/agent/AGENTS.md
 └── pi/agent/
     ├── APPEND_SYSTEM.md                  -> ~/.pi/agent/APPEND_SYSTEM.md
+    ├── mcp.json                          -> ~/.pi/agent/mcp.json
     └── extensions/pretooluse-hooks.ts   -> ~/.pi/agent/extensions/pretooluse-hooks.ts
 ```
 
-| File                                             | Holds                                                                                                                                           |
-| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `global/AGENTS.md`                               | Harness-agnostic rules: communication style, branch + commit workflow, PR conventions, anti-patterns                                            |
-| `global/pi/agent/APPEND_SYSTEM.md`               | `pi`-only: which CLI to use per external service (`gh`, `neonctl`, `vercel`, `stripe`, `axiom`, `sentry`, `playwright cli`, Context7 over HTTP) |
-| `global/pi/agent/extensions/pretooluse-hooks.ts` | `pi`-only: runs the `hooks/` `PreToolUse` scripts on `pi` tool calls — see [Hooks](#-hooks)                                                     |
+| File                                             | Holds                                                                                                                                                                                                                                                                  |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `global/AGENTS.md`                               | Harness-agnostic rules: communication style, branch + commit workflow, PR conventions, anti-patterns                                                                                                                                                                   |
+| `global/pi/agent/APPEND_SYSTEM.md`               | `pi`-only: the GitHub MCP first, then which CLI to use per external service (`gh`, `neonctl`, `vercel`, `stripe`, `axiom`, `sentry`, `playwright cli`, Context7 over HTTP)                                                                                             |
+| `global/pi/agent/mcp.json`                       | `pi`-only: MCP servers. Just `github`, under Claude's server name so `mcp__github__*` tool names match, `deferred` so the model can find the tools (`pi`'s default `codemode` hides them from it), and authenticated by `gh auth token` so no secret lands in the repo |
+| `global/pi/agent/extensions/pretooluse-hooks.ts` | `pi`-only: runs the `hooks/` `PreToolUse` scripts on `pi` tool calls — see [Hooks](#-hooks)                                                                                                                                                                            |
 
 ```bash
 ln -s ~/code/agentic_coding_project_template/global/AGENTS.md ~/.claude/CLAUDE.md
 ln -s ~/code/agentic_coding_project_template/global/AGENTS.md ~/.pi/agent/AGENTS.md
 ln -s ~/code/agentic_coding_project_template/global/pi/agent/APPEND_SYSTEM.md ~/.pi/agent/APPEND_SYSTEM.md
+ln -s ~/code/agentic_coding_project_template/global/pi/agent/mcp.json ~/.pi/agent/mcp.json
 ```
 
-**Why `pi` gets two rules files and Claude gets one.** The agents differ in exactly one way: Claude has MCP servers, `pi` does not — so `pi` needs CLI instructions that would be wrong for Claude. `pi` loads two global files from `~/.pi/agent/`: `AGENTS.md` (context file) and `APPEND_SYSTEM.md` (appended to the system prompt). That second slot is what makes the split possible — `pi` gets the shared rules through one symlink and its CLI tooling through the other, so neither file needs a copy of the other's content. Claude reads only `~/.claude/CLAUDE.md`, so it sees the shared rules and never the CLI mappings.
+Check the MCP wiring with `pi mcp list`.
 
-Every rule lives in exactly one file. Edit `global/AGENTS.md` and both agents pick it up; edit `global/APPEND_SYSTEM.md` and only `pi` does.
+**Why `pi` gets two rules files and Claude gets one.** The agents differ in which services they reach over MCP: Claude has a server for nearly every one, `pi` has only `github` — so `pi` needs CLI instructions for the rest that would be wrong for Claude. `pi` loads two global files from `~/.pi/agent/`: `AGENTS.md` (context file) and `APPEND_SYSTEM.md` (appended to the system prompt). That second slot is what makes the split possible — `pi` gets the shared rules through one symlink and its CLI tooling through the other, so neither file needs a copy of the other's content. Claude reads only `~/.claude/CLAUDE.md`, so it sees the shared rules and never the CLI mappings.
+
+Every rule lives in exactly one file. Edit `global/AGENTS.md` and both agents pick it up; edit `global/pi/agent/APPEND_SYSTEM.md` and only `pi` does.
 
 ## 🪝 Hooks
 
@@ -198,7 +203,7 @@ See `cli/README.md` for script-authoring conventions.
    ln -s ~/code/agentic_coding_project_template/claude/skills/new-project-setup ~/.claude/skills/new-project-setup
    # ...repeat for any others you find useful
    ```
-4. **Symlink the global rules** into each agent's config — see [Global agent rules](#-global-agent-rules) for the three commands.
+4. **Symlink the global rules** into each agent's config — see [Global agent rules](#-global-agent-rules) for the commands.
 5. **Edit `SPEC.md`** first — define the problem and requirements.
 6. **Refine `ARCHITECTURE.md`** — lock in tech stack and folder structure.
 7. **Update `AGENTS.md`** with project-specific standards and "Hard Refusal" anti-patterns.
