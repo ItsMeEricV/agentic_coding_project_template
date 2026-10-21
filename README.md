@@ -82,7 +82,7 @@ ln -s ~/code/agentic_coding_project_template/global/pi/agent/APPEND_SYSTEM.md ~/
 ln -s ~/code/agentic_coding_project_template/global/pi/agent/mcp.json ~/.pi/agent/mcp.json
 ```
 
-Check the MCP wiring with `pi mcp list`.
+Check the MCP wiring with `pi mcp list`. `cli/test_skill_mcp_servers.py` fails CI when a skill names an `mcp__<server>__` tool this `mcp.json` does not declare, or a hyphenated server (`pi` rewrites `-` to `_` in tool names, so Claude's name never resolves there) — a skill can't quietly depend on a server only Claude has.
 
 **Why `pi` gets two rules files and Claude gets one.** The agents differ in which services they reach over MCP: Claude has a server for nearly every one, `pi` has only `github` — so `pi` needs CLI instructions for the rest that would be wrong for Claude. `pi` loads two global files from `~/.pi/agent/`: `AGENTS.md` (context file) and `APPEND_SYSTEM.md` (appended to the system prompt). That second slot is what makes the split possible — `pi` gets the shared rules through one symlink and its CLI tooling through the other, so neither file needs a copy of the other's content. Claude reads only `~/.claude/CLAUDE.md`, so it sees the shared rules and never the CLI mappings.
 
