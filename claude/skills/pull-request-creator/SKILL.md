@@ -127,26 +127,28 @@ Co-Authored-By: Claude <model version>
 
 **Attribute:** prepend `**[CLAUDE]**` to every PR comment and review reply you write. Other agents use their own tag (`**[GEMINI]**`, `**[COPILOT]**`) — match `AGENTS.md`.
 
-**Reply to every comment** (human or bot) with one of: **agree** (and fix or open follow-up), **disagree** (and explain), **defer** (link an issue). Silence reads as ignored. Use `mcp__github__add_reply_to_pull_request_comment`.
+**Reply to every comment** (human or bot) with one of: **agree** (and fix or open follow-up), **disagree** (and explain), **defer** (link an issue). Silence reads as ignored. Inline review comments: `mcp__github__add_reply_to_pull_request_comment` with the thread's **top-level** comment ID — GitHub doesn't support replies to replies. Conversation comments and review summaries have no thread: answer with `mcp__github__add_issue_comment` on the PR number, quoting what you're answering.
 
 If the project wires in an extra automated reviewer (e.g. a Gemini script), invocation is project-specific — see its `AGENTS.md`. For multi-turn reviewer sessions, generate a session UUID up front and pass it on every call.
 
 ## Fallback: MCP unavailable
 
-If `mcp__github__*` is missing (different harness, outage), use `gh`. The body-as-shell-arg problem is real **only here** — backticks and embedded quotes need handling:
+If the `mcp__github__*` tools are unavailable (outage, or a harness without the `github` server), use the `gh` equivalent below — and only these. An operation with no row here: don't build a REST path from memory; skip it and name it in your report.
+
+Bodies go through a file you write with the file-write tool, never an inline `--body` or a heredoc — backticks in a shell argument get evaluated. Scope the filename to the branch (or PR number once it exists) so parallel sessions don't collide. `{owner}/{repo}` is literal: `gh api` fills it from the current checkout.
+
+| MCP call                                             | `gh` equivalent                                                                                  |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `pull_request_read` (`method: get`)                  | `gh pr view <N> --json state,isDraft,title,body,headRefName`                                     |
+| `create_pull_request`                                | `gh pr create --draft --base main --title "..." --body-file /tmp/pr-body-<branch>.md`            |
+| `add_reply_to_pull_request_comment`                  | `gh api repos/{owner}/{repo}/pulls/<N>/comments/<comment_id>/replies -F body=@/tmp/reply-<N>.md` |
+| `add_issue_comment` (conversation or review summary) | `gh pr comment <N> --body-file /tmp/reply-<N>.md`                                                |
+
+`<comment_id>` must be a thread's top-level review comment. List them with:
 
 ```bash
-# Plain bodies: inline works
-gh pr create --draft --title "..." --body "$BODY"
-
-# Bodies with backticks: write to a per-PR file so the shell doesn't eval them.
-# Scope filename to this PR (branch pre-creation, PR number after) so parallel
-# Claude sessions don't collide on a shared /tmp/pr-body.md.
-BRANCH=$(git branch --show-current)
-cat > "/tmp/pr-body-${BRANCH}.md" <<'EOF'
-...body with `backticks` and 'quotes'...
-EOF
-gh pr create --draft --title "..." --body-file "/tmp/pr-body-${BRANCH}.md"
+gh api --paginate repos/{owner}/{repo}/pulls/<N>/comments \
+  --jq '.[] | select(.in_reply_to_id == null) | {id, path, line, user: .user.login}'
 ```
 
 ## Common mistakes
