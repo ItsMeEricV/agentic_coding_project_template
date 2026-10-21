@@ -5,23 +5,25 @@ Loaded as `~/.pi/agent/APPEND_SYSTEM.md` from `global/pi/agent/`. Shared rules l
 
 ## External Service Tooling
 
-`pi` has no MCP servers. Every external service below is reachable from a CLI via
-`bash` execution. Prefer these CLIs; they are already installed and authenticated.
+`pi` has one MCP server, `github` (from `~/.pi/agent/mcp.json`). Every other external
+service below is reachable from a CLI via `bash` execution. Prefer these CLIs; they are
+already installed and authenticated.
 
-**General rule:** do NOT tell the user to open a web console, and do NOT look for
-an MCP tool, unless they specifically ask for the web UI.
+**General rule:** do NOT tell the user to open a web console unless they specifically ask
+for the web UI, and do NOT look for an MCP tool for any service other than GitHub.
 
-### GitHub — use `gh`
+### GitHub — use the `github` MCP, `gh` for the gaps
 
-- Use the `gh` CLI for all GitHub work: PRs, issues, reviews, comments, releases,
-  status checks, repo and code search.
-- Authenticated as `ItsMeEricV`. Check with `gh auth status`.
-- Useful shapes: `gh pr create`, `gh pr view <n> --json state,mergeable,statusCheckRollup`,
-  `gh pr diff <n>`, `gh pr review <n>`, `gh issue list`, `gh api <endpoint>`.
+- Use the `mcp__github__*` tools for PRs, issues, reviews, review-comment replies, branches,
+  and code search. They are deferred: find one with `tool_search`, then call it. The names
+  match Claude Code's, so a skill that names `mcp__github__<tool>` means that exact tool here.
+- Use `gh` only for what the MCP does not expose — `gh pr view <n> --web`,
+  `gh pr checkout <n>`, `gh run view <id> --log-failed` — or when the MCP is down. Both are
+  authenticated as `ItsMeEricV` through the same token; check with `gh auth status`.
 - Anything the subcommands do not cover, reach through `gh api` rather than raw `curl` —
   it carries auth and pagination for you.
-- **Multi-line content (PR body, issue body, commit message): write the text to a file
-  with the file-write tool and pass `--body-file` / `-F`.** Never use
+- **Multi-line content through `gh` (PR body, issue body, commit message): write the text to
+  a file with the file-write tool and pass `--body-file` / `-F`.** Never use
   `--body "$(cat <<'EOF' ... EOF)"` — markdown backticks inside a quoted heredoc have
   leaked through and triggered real command substitution (one historical case actually ran
   `vercel deploy --prod` from a PR body).
@@ -100,7 +102,7 @@ an MCP tool, unless they specifically ask for the web UI.
   `state-save` / `state-load` persist a logged-in session to a file for reuse.
 - **Injecting an auth cookie** (skipping a login flow with a token from a dev script):
   - Order is `open <url>` → `cookie-set` → `goto`. `cookie-set` needs a browser context to
-    attach to, and the page must load *after* the cookie exists.
+    attach to, and the page must load _after_ the cookie exists.
   - Read the cookie name from whatever minted the token; never hardcode it. Frameworks
     suffix and prefix session cookie names (per-instance suffixes, `__Secure-` on https),
     and a wrong name authenticates as nobody while looking like it worked.
@@ -115,7 +117,7 @@ an MCP tool, unless they specifically ask for the web UI.
   default (`--headed` only when the user wants to watch); `--mobile` renders lighter pages.
 - **Not covered — say so instead of improvising:** Lighthouse audits (use the separate
   `lighthouse` CLI), Chrome performance traces with Core Web Vitals insights, heap
-  snapshots, and CPU throttling. `tracing-start` / `tracing-stop` record a *Playwright*
+  snapshots, and CPU throttling. `tracing-start` / `tracing-stop` record a _Playwright_
   trace for `npx playwright show-trace`, which is a different artifact.
 
 ### Library / framework docs — use the Context7 HTTP API
