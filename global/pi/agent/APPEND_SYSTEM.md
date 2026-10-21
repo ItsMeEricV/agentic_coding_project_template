@@ -16,7 +16,7 @@ for the web UI, and do NOT look for an MCP tool for any service other than GitHu
 
 - Use the `mcp__github__*` tools for PRs, issues, reviews, review-comment replies, branches,
   and code search. They are deferred: find one with `tool_search`, then call it. The names
-  match Claude Code's, so a skill that names `mcp__github__<tool>` means that exact tool here.
+  match Claude Code's, so a skill that names an `mcp__github__*` tool means that exact tool here.
 - Use `gh` only for what the MCP does not expose — `gh pr view <n> --web`,
   `gh pr checkout <n>`, `gh run view <id> --log-failed` — or when the MCP is down. Both are
   authenticated as `ItsMeEricV` through the same token; check with `gh auth status`.
