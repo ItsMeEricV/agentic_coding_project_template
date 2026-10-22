@@ -31,7 +31,8 @@ Setup:
                 https://platform.openai.com/api-keys
 
 PR Review Mode (--pr):
-  Fetches the PR diff via `gh`, sends it to the selected model for line-level
+  Fetches the PR diff via `gh` (built locally with `git diff` when GitHub
+  refuses one over 20,000 lines), sends it to the selected model for line-level
   review, and posts comments directly on the PR as inline review comments.
   Each comment is prefixed with the entry's attribution tag, e.g. **[GEMINI]**.
   A comment at a file and line that tag already commented on is skipped, so a
@@ -42,8 +43,8 @@ PR Review Mode (--pr):
     uv run cli/agent_code_reviewer.py --model codex --pr 60
     uv run cli/agent_code_reviewer.py --pr 60 --file docs/rfcs/0009.md
 
-  The whole diff goes in one pass, sized to the entry's `context_window` from
-  the roster. A diff that does not fit is refused (exit 3) with the roster
+  The whole diff goes in one pass, sized to the entry's `context_window` less
+  its `max_output_tokens` (32K if unset). A diff that does not fit is refused (exit 3) with the roster
   entries that would take it — nothing is silently truncated. `--file` (repeatable)
   attaches design docs or sibling-layer code as read-only context so the
   reviewer judges the diff against the real contract, not a guess at it.
@@ -120,6 +121,9 @@ Exit codes:
   4  a slice run (--only-path / --ignore-path) the whole-diff pass did not
      earn: no pass yet, PR head moved, no nomination under 150K tokens, or
      three slices already ran
+  5  the model's reply was empty, or it stopped on its output budget, a
+     content filter, or a provider error; nothing is posted or saved, and
+     stderr carries the stop reason, token usage, and generation id
 """
 
 from __future__ import annotations
@@ -212,12 +216,15 @@ PR_REVIEW_SYSTEM_PROMPT: str = (
     "Return ONLY valid JSON, no markdown fences."
 )
 
-# Diff hunks for these paths are dropped from PR review input. Plans / specs
-# under docs/superpowers are agentic-coding scratch material, and lockfiles are
-# generated: neither is code-relevant for review, and a lockfile alone can be
-# 10K+ tokens that crowd out the real diff.
+# Diff hunks for these paths are dropped from PR review input. Prose (docs,
+# docs/superpowers plans, .trail learnings) and license text are not code, and
+# lockfiles and snapshots are generated: none is code-relevant for review, and a
+# lockfile alone can be 10K+ tokens that crowd out the real diff.
 DEFAULT_IGNORE_PATHS: list[str] = [
+    "*.md",
+    ".trail/",
     "docs/superpowers/",
+    "*LICENSE*",
     "package-lock.json",
     "pnpm-lock.yaml",
     "yarn.lock",
@@ -244,7 +251,7 @@ AccessMethod = Literal["openrouter", "gemini_api", "openai_api"]
 ACCESS_METHODS: tuple[AccessMethod, ...] = get_args(AccessMethod)
 
 REQUIRED_FIELDS: tuple[str, ...] = ("key", "name", "access_method", "id")
-OPTIONAL_FIELDS: tuple[str, ...] = ("tag", "store", "context_window")
+OPTIONAL_FIELDS: tuple[str, ...] = ("tag", "store", "context_window", "max_output_tokens")
 
 # Window assumed for a roster entry that declares none. Deliberately small: a
 # too-generous guess truncates nothing but overflows the model, which fails
@@ -252,11 +259,15 @@ OPTIONAL_FIELDS: tuple[str, ...] = ("tag", "store", "context_window")
 DEFAULT_CONTEXT_WINDOW: int = 128_000
 
 # Rough chars-per-token for code and diffs, used to turn a token window into a
-# character budget without a tokenizer dependency.
-CHARS_PER_TOKEN: int = 4
+# character budget without a tokenizer dependency. Set a little below the ~3.3
+# measured on a large TypeScript PR, so the estimate errs high and a diff near
+# the limit is refused here (exit 3) rather than by the model.
+CHARS_PER_TOKEN: float = 3.2
 
-# Tokens held back from the window for the model's JSON reply: a long diff can
-# draw dozens of comments, each with a verbatim code excerpt.
+# Tokens held back from the window for the reply when sizing a --pr diff, for
+# an entry that declares no `max_output_tokens`. Such an entry sends no output
+# cap, so the provider's own default applies; one that declares it sends it as
+# the cap and holds back exactly that.
 REPLY_RESERVE_TOKENS: int = 32_000
 
 # Where per-model history and per-PR focus files live. Tests pass a temp dir.
@@ -283,6 +294,7 @@ class ModelEntry:
     tag: str
     store: bool = False
     context_window: int = DEFAULT_CONTEXT_WINDOW
+    max_output_tokens: int | None = None  # None: send no cap
 
 
 class DiffTooLargeError(Exception):
@@ -291,6 +303,10 @@ class DiffTooLargeError(Exception):
 
 class SliceGateError(Exception):
     """A slice run the whole pass did not earn. main() exits 4."""
+
+
+class IncompleteReplyError(Exception):
+    """An empty or cut-off model reply, refused before it is posted. main() exits 5."""
 
 
 MAX_FOCUS_AREAS: int = 3
@@ -412,13 +428,12 @@ def parse_config(raw: JsonDict) -> Roster:
                 f"(this one is {access_method})"
             )
 
-        context_window = model.get("context_window", DEFAULT_CONTEXT_WINDOW)
-        if (
-            isinstance(context_window, bool)
-            or not isinstance(context_window, int)
-            or context_window <= 0
-        ):
-            raise ConfigError(f"{where}: `context_window` must be a positive integer (tokens)")
+        context_window = _positive_int(model, "context_window", DEFAULT_CONTEXT_WINDOW, where)
+        max_output = None
+        if "max_output_tokens" in model:
+            max_output = _positive_int(model, "max_output_tokens", 0, where)
+            if max_output >= context_window:
+                raise ConfigError(f"{where}: `max_output_tokens` must be below `context_window`")
 
         entries.append(
             ModelEntry(
@@ -429,6 +444,7 @@ def parse_config(raw: JsonDict) -> Roster:
                 tag=tag,
                 store=store,
                 context_window=context_window,
+                max_output_tokens=max_output,
             )
         )
 
@@ -437,6 +453,13 @@ def parse_config(raw: JsonDict) -> Roster:
             f"default {default!r} matches no entry; valid keys: {', '.join(sorted(seen))}"
         )
     return Roster(entries=entries, default_key=default, catalog_reviewed=reviewed)
+
+
+def _positive_int(model: JsonDict, field: str, default: int, where: str) -> int:
+    value = model.get(field, default)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ConfigError(f"{where}: `{field}` must be a positive integer (tokens)")
+    return value
 
 
 def load_config(path: Path = CONFIG_PATH) -> Roster:
@@ -460,6 +483,7 @@ def format_roster(roster: Roster, verbose: bool = False) -> str:
             entry.access_method,
             entry.id,
             _compact_count(entry.context_window),
+            _compact_count(entry.max_output_tokens) if entry.max_output_tokens else "-",
             "set" if adapter.api_key() else f"MISSING {adapter.api_key_env_var()}",
         ]
         if verbose:
@@ -467,7 +491,7 @@ def format_roster(roster: Roster, verbose: bool = False) -> str:
             row.append(f"[{entry.tag}]")
         rows.append(row)
 
-    headers = ["KEY", "ACCESS", "ID", "CONTEXT", "API KEY"]
+    headers = ["KEY", "ACCESS", "ID", "CONTEXT", "OUTPUT", "API KEY"]
     if verbose:
         headers.insert(1, "NAME")
         headers.append("TAG")
@@ -512,6 +536,7 @@ class CatalogModel:
     is_batch: bool
     created: int = 0  # unix seconds the catalog listed it; 0 when unknown
     text_only: bool = True  # outputs text alone, not images or audio
+    max_output: int = 0  # the top provider's completion cap; 0 when unlisted
 
     @property
     def sort_key(self) -> tuple[int, int, str]:
@@ -541,6 +566,7 @@ def parse_openrouter_catalog(payload: JsonDict) -> list[CatalogModel]:
                 is_batch=model_id.endswith(":batch"),
                 created=int(raw.get("created") or 0),
                 text_only=outputs == ["text"],
+                max_output=int((raw.get("top_provider") or {}).get("max_completion_tokens") or 0),
             )
         )
     return models
@@ -785,11 +811,12 @@ def format_catalog(models: list[CatalogModel]) -> str:
                 model.id,
                 model.name,
                 _compact_count(model.context_length),
+                _compact_count(model.max_output) if model.max_output else "-",
                 f"${model.prompt_price:g}/${model.completion_price:g}",
                 ", ".join(notes),
             ]
         )
-    headers = ["ID", "NAME", "CONTEXT", "$IN/$OUT per M", "NOTES"]
+    headers = ["ID", "NAME", "CONTEXT", "MAX OUT", "$IN/$OUT per M", "NOTES"]
     return _render_table(headers, rows)
 
 
@@ -897,6 +924,40 @@ def catalog_check(roster: Roster, cache: Path, now: float, fetch: Callable[[], J
 # turn-and-save cycle. History-file layout is shared: one file per roster entry.
 
 
+@dataclass(frozen=True)
+class ModelReply:
+    """One model turn as an adapter reads it off the API's response. Token
+    counts are None where the API gave none; `completion_tokens` includes
+    reasoning, which `reasoning_tokens` breaks out."""
+
+    text: str
+    stop_reason: str  # as the API spells it; "" when it gave none
+    complete: bool  # stopped on its own end, not a budget, filter, or error
+    signature: str = ""  # access-method specific; threaded into the next turn
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    generation_id: str = ""  # OpenRouter's id for the call
+
+    def describe(self) -> str:
+        def count(n: int | None) -> str:
+            return "?" if n is None else f"{n:,}"
+
+        usage = f"{count(self.prompt_tokens)} prompt + {count(self.completion_tokens)} completion"
+        if self.reasoning_tokens is not None:
+            usage += f" ({count(self.reasoning_tokens)} reasoning)"
+        line = f"stop reason {self.stop_reason or '(none given)'}; tokens {usage}"
+        return line + (f"; generation {self.generation_id}" if self.generation_id else "")
+
+
+def require_complete(reply: ModelReply) -> ModelReply:
+    if not reply.text.strip():
+        raise IncompleteReplyError(f"the model's reply is empty: {reply.describe()}")
+    if not reply.complete:
+        raise IncompleteReplyError(f"the model's reply was cut off: {reply.describe()}")
+    return reply
+
+
 def is_transient(exc: BaseException) -> bool:
     """429, 5xx, or a timeout, from urllib or from an SDK that exposes
     `status_code`. Duck-typed so the OpenRouter SDK need not be importable."""
@@ -954,9 +1015,7 @@ class Adapter(ABC):
         return self.call_api(request_body)
 
     @abstractmethod
-    def extract_response(self, data: JsonDict) -> tuple[str, str]:
-        """Returns (visible_text, opaque_signature). Signature is access-method
-        specific and threaded back into the next turn's history record."""
+    def extract_response(self, data: JsonDict) -> ModelReply: ...
 
     # Shared history-file ops. The on-disk shape is the same everywhere
     # (entries list + session + per-entry timestamps); only the per-entry
@@ -1030,10 +1089,13 @@ class GeminiAdapter(Adapter):
         return history
 
     def build_request(self, system_prompt: str, history: list[JsonDict]) -> JsonDict:
-        return {
+        body: JsonDict = {
             "system_instruction": {"parts": [{"text": system_prompt}]},
             "contents": history,
         }
+        if self.entry.max_output_tokens:
+            body["generationConfig"] = {"maxOutputTokens": self.entry.max_output_tokens}
+        return body
 
     def call_api(self, request_body: JsonDict) -> JsonDict:
         key = self.api_key()
@@ -1048,16 +1110,31 @@ class GeminiAdapter(Adapter):
         with urllib.request.urlopen(req, timeout=300) as resp:
             return json.loads(resp.read())
 
-    def extract_response(self, data: JsonDict) -> tuple[str, str]:
+    def extract_response(self, data: JsonDict) -> ModelReply:
         if data.get("error"):
             msg = data["error"].get("message", "unknown error")
             print(f"API Error: {msg[:200]}", file=sys.stderr)
             sys.exit(1)
-        candidate = data.get("candidates", [{}])[0]
+        candidate = (data.get("candidates") or [{}])[0]
         parts = candidate.get("content", {}).get("parts", [{}])
         text = "".join(p.get("text", "") for p in parts)
         signature = parts[0].get("thoughtSignature", "") if parts else ""
-        return text, signature
+        # No candidate at all means the prompt itself was blocked.
+        stop = candidate.get("finishReason") or (data.get("promptFeedback") or {}).get(
+            "blockReason", ""
+        )
+        usage = data.get("usageMetadata") or {}
+        answer, thoughts = usage.get("candidatesTokenCount"), usage.get("thoughtsTokenCount")
+        return ModelReply(
+            text=text,
+            stop_reason=stop,
+            complete=stop in ("", "STOP"),
+            signature=signature,
+            prompt_tokens=usage.get("promptTokenCount"),
+            # Gemini counts thoughts apart from the answer; the reply counts them in.
+            completion_tokens=None if answer is None else answer + (thoughts or 0),
+            reasoning_tokens=thoughts,
+        )
 
 
 class OpenAIAdapter(Adapter):
@@ -1133,6 +1210,8 @@ class OpenAIAdapter(Adapter):
             "instructions": system_prompt,
             "store": store,
         }
+        if self.entry.max_output_tokens:
+            body["max_output_tokens"] = self.entry.max_output_tokens
         if store:
             latest_user = ""
             for msg in reversed(history):
@@ -1172,7 +1251,7 @@ class OpenAIAdapter(Adapter):
         with urllib.request.urlopen(req, timeout=300) as resp:
             return json.loads(resp.read())
 
-    def extract_response(self, data: JsonDict) -> tuple[str, str]:
+    def extract_response(self, data: JsonDict) -> ModelReply:
         # OpenAI returns `"error": null` on success; only treat truthy as a failure.
         if data.get("error"):
             msg = data["error"].get("message", "unknown error")
@@ -1186,8 +1265,19 @@ class OpenAIAdapter(Adapter):
                 for content in item.get("content", []) or []:
                     if isinstance(content, dict) and "text" in content:
                         text += content["text"]
-        response_id = data.get("id", "")
-        return text, response_id
+        status = data.get("status", "")
+        if status == "incomplete":
+            status = (data.get("incomplete_details") or {}).get("reason") or status
+        usage = data.get("usage") or {}
+        return ModelReply(
+            text=text,
+            stop_reason=status,
+            complete=status in ("", "completed"),
+            signature=data.get("id", ""),
+            prompt_tokens=usage.get("input_tokens"),
+            completion_tokens=usage.get("output_tokens"),
+            reasoning_tokens=(usage.get("output_tokens_details") or {}).get("reasoning_tokens"),
+        )
 
 
 class OpenRouterAdapter(Adapter):
@@ -1220,7 +1310,12 @@ class OpenRouterAdapter(Adapter):
             for msg in history
             if msg.get("role") in ("user", "assistant", "model")
         ]
-        return {"messages": messages}
+        body: JsonDict = {"messages": messages}
+        if self.entry.max_output_tokens:
+            # max_tokens, not max_completion_tokens: every roster model on
+            # OpenRouter takes the former, and several reject the latter.
+            body["max_tokens"] = self.entry.max_output_tokens
+        return body
 
     def call_api(self, request_body: JsonDict) -> JsonDict:
         # Deferred import: the SDK is declared in this script's PEP 723 header,
@@ -1239,13 +1334,22 @@ class OpenRouterAdapter(Adapter):
 
         # timeout_ms matches the 300s the urllib adapters pass to urlopen.
         with OpenRouter(api_key=self.api_key(), timeout_ms=300_000) as client:
-            response = client.chat.send(
-                model=self.entry.id, messages=request_body["messages"]
-            )
-        return {"text": response.choices[0].message.content or ""}
+            response = client.chat.send(model=self.entry.id, **request_body)
+        return response.model_dump(mode="json")
 
-    def extract_response(self, data: JsonDict) -> tuple[str, str]:
-        return data.get("text", ""), ""
+    def extract_response(self, data: JsonDict) -> ModelReply:
+        choice = (data.get("choices") or [{}])[0]
+        stop = choice.get("finish_reason") or ""
+        usage = data.get("usage") or {}
+        return ModelReply(
+            text=(choice.get("message") or {}).get("content") or "",
+            stop_reason=stop,
+            complete=stop in ("", "stop"),
+            prompt_tokens=usage.get("prompt_tokens"),
+            completion_tokens=usage.get("completion_tokens"),
+            reasoning_tokens=(usage.get("completion_tokens_details") or {}).get("reasoning_tokens"),
+            generation_id=data.get("id", ""),
+        )
 
 
 ADAPTERS: dict[AccessMethod, type[Adapter]] = {
@@ -1271,17 +1375,48 @@ def make_adapter(entry: ModelEntry, state_dir: Path = STATE_DIR) -> Adapter:
 # ---------------------------------------------------------------------------
 
 
-def get_pr_diff(pr_number: str) -> str:
-    """Fetch PR diff using gh CLI."""
-    result = subprocess.run(
-        ["gh", "pr", "diff", pr_number],
-        capture_output=True,
-        text=True,
-    )
+def _run_or_exit(args: list[str], what: str) -> str:
+    result = subprocess.run(args, capture_output=True, text=True)
     if result.returncode != 0:
-        print(f"Error fetching PR diff: {result.stderr}", file=sys.stderr)
+        print(f"Error {what}: {result.stderr}", file=sys.stderr)
         sys.exit(1)
     return result.stdout
+
+
+def get_pr_diff(pr_number: str) -> str:
+    """Fetch PR diff using gh CLI. GitHub refuses a diff over 20,000 lines
+    (HTTP 406, too_large); that one is built locally from the same head SHA,
+    so inline comments still anchor."""
+    result = subprocess.run(["gh", "pr", "diff", pr_number], capture_output=True, text=True)
+    if result.returncode == 0:
+        return result.stdout
+    if "too_large" not in result.stderr and "HTTP 406" not in result.stderr:
+        print(f"Error fetching PR diff: {result.stderr}", file=sys.stderr)
+        sys.exit(1)
+    refs = json.loads(
+        _run_or_exit(
+            ["gh", "pr", "view", pr_number, "--json", "baseRefName,headRefOid"],
+            "fetching PR refs",
+        )
+    )
+    base, head = refs["baseRefName"], refs["headRefOid"]
+    _run_or_exit(
+        ["git", "fetch", "--quiet", "--no-tags", "origin", f"pull/{pr_number}/head",
+         f"+refs/heads/{base}:refs/remotes/origin/{base}"],
+        "fetching PR refs from origin",
+    )
+    # Three-dot: from the merge base, as GitHub diffs a PR. Prefix flags pin
+    # the a/ b/ headers filter_diff parses, whatever the local diff config.
+    diff = _run_or_exit(
+        ["git", "diff", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/",
+         f"origin/{base}...{head}"],
+        "building PR diff locally",
+    )
+    print(
+        f"--> GitHub refused the PR diff as too large; built it locally (origin/{base}...{head[:12]})",
+        file=sys.stderr,
+    )
+    return diff
 
 
 def _path_matches_any(path: str, patterns: list[str]) -> bool:
@@ -1688,10 +1823,11 @@ def post_pr_review(
         )
 
 
-def diff_char_budget(context_window: int, overhead_chars: int) -> int:
+def diff_char_budget(entry: ModelEntry, overhead_chars: int) -> int:
     """Characters of annotated diff that fit beside `overhead_chars` of prompt
-    (system prompt, PR description, attached files) with the reply reserve held back."""
-    return max(0, (context_window - REPLY_RESERVE_TOKENS) * CHARS_PER_TOKEN - overhead_chars)
+    (system prompt, PR description, attached files) with the entry's output budget held back."""
+    room = entry.context_window - (entry.max_output_tokens or REPLY_RESERVE_TOKENS)
+    return max(0, int(room * CHARS_PER_TOKEN) - overhead_chars)
 
 
 def entries_that_fit(roster: Roster, needed_chars: int, overhead_chars: int) -> list[ModelEntry]:
@@ -1699,7 +1835,7 @@ def entries_that_fit(roster: Roster, needed_chars: int, overhead_chars: int) -> 
     return [
         e
         for e in roster.entries
-        if diff_char_budget(e.context_window, overhead_chars) >= needed_chars
+        if diff_char_budget(e, overhead_chars) >= needed_chars
     ]
 
 
@@ -1942,7 +2078,7 @@ def review_pr(
     head = pr_info.get("headRefOid", "")
     repo_slug = get_repo_slug()
     focus_path = focus_file_path(pr_number, repo_slug)
-    diff_tokens = len(annotated_diff) // CHARS_PER_TOKEN
+    diff_tokens = int(len(annotated_diff) / CHARS_PER_TOKEN)
 
     # A slice runs only when the whole pass earned it. Checked before the
     # size check so a refused slice costs nothing, not even a token estimate.
@@ -1965,7 +2101,7 @@ def review_pr(
     overhead = len(build_pr_prompt("", context_block, extra_instructions, context_files or []))
     overhead += len(PR_REVIEW_SYSTEM_PROMPT)
     entry = adapter.entry
-    budget = diff_char_budget(entry.context_window, overhead)
+    budget = diff_char_budget(entry, overhead)
     if len(annotated_diff) > budget:
         fits = [e.key for e in entries_that_fit(roster, len(annotated_diff), overhead)]
         hint = (
@@ -1982,11 +2118,13 @@ def review_pr(
             write_focus_file(pr_number, [], churn_by_file(diff), repo_slug, head, diff_tokens)
         raise DiffTooLargeError(
             f"diff is ~{diff_tokens:,} tokens after annotation; "
-            f"{entry.key} ({_compact_count(entry.context_window)} window) has room for "
-            f"~{budget // CHARS_PER_TOKEN:,} beside the prompt. {hint}"
+            f"{entry.key} ({_compact_count(entry.context_window)} window, "
+            f"{_compact_count(entry.max_output_tokens or REPLY_RESERVE_TOKENS)} of it for output) "
+            "has room for "
+            f"~{int(budget / CHARS_PER_TOKEN):,} beside the prompt. {hint}"
         )
     print(
-        f"--> Diff ~{diff_tokens:,} tokens of ~{budget // CHARS_PER_TOKEN:,} available on {entry.key}",
+        f"--> Diff ~{diff_tokens:,} tokens of ~{int(budget / CHARS_PER_TOKEN):,} available on {entry.key}",
         file=sys.stderr,
     )
 
@@ -1997,7 +2135,9 @@ def review_pr(
     history = adapter.add_message(history, "user", prompt)
     request_body = adapter.build_request(PR_REVIEW_SYSTEM_PROMPT, history)
     response_data = adapter.call(request_body)
-    text, _ = adapter.extract_response(response_data)
+    reply = require_complete(adapter.extract_response(response_data))
+    print(f"--> {entry.key}: {reply.describe()}", file=sys.stderr)
+    text = reply.text
 
     # Parse JSON response
     try:
@@ -2063,10 +2203,14 @@ def review_pr(
 
 
 def main() -> None:
+    # --help ends with the docstring's exit-code table, its one source.
+    _, heading, exit_codes = (__doc__ or "").partition("Exit codes:")
     parser = argparse.ArgumentParser(
-        description="Config-driven second-opinion code reviewer. "
+        description="Config-driven second-opinion code reviewer.\n"
         f"Models are declared in {CONFIG_PATH.name} next to this script; "
-        "run --list to see them."
+        "run --list to see them.",
+        epilog=heading + exit_codes,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("message", nargs="?", default="", help="Message to send")
     parser.add_argument(
@@ -2304,6 +2448,9 @@ def main() -> None:
         except SliceGateError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             sys.exit(4)
+        except IncompleteReplyError as exc:
+            print(f"Error: {exc}. Nothing posted.", file=sys.stderr)
+            sys.exit(5)
         return
 
     # --reset combined with a message: reset first, then proceed to send.
@@ -2322,7 +2469,7 @@ def main() -> None:
         full_message += f"\n\n```\n{number_lines(file_content)}\n```"
 
     # Token estimate for large context warning
-    token_est = len(full_message) // 4
+    token_est = int(len(full_message) / CHARS_PER_TOKEN)
     if token_est > 32000:
         print(
             f"--> Large context: ~{token_est} tokens. Consider context caching.",
@@ -2361,11 +2508,15 @@ def main() -> None:
     request_body = adapter.build_request(system_prompt, history)
     response_data = adapter.call(request_body)
 
-    # Parse response
-    text, signature = adapter.extract_response(response_data)
+    try:
+        reply = require_complete(adapter.extract_response(response_data))
+    except IncompleteReplyError as exc:
+        print(f"Error: {exc}. Nothing saved to history.", file=sys.stderr)
+        sys.exit(5)
+    text = reply.text
 
     # Save to history
-    history = adapter.add_message(history, "model", text, signature)
+    history = adapter.add_message(history, "model", text, reply.signature)
     surviving_timestamps.append(time.time())
     adapter.save_history(history, session=session, timestamps=surviving_timestamps)
 

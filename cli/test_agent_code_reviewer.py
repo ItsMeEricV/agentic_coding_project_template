@@ -6,23 +6,31 @@ Run with: python3 -m unittest cli.test_agent_code_reviewer -v
 from __future__ import annotations
 
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
 import urllib.error
+from contextlib import redirect_stderr
 from datetime import date, datetime
 from email.message import Message
+from io import StringIO
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from agent_code_reviewer import (  # noqa: E402
+    CHARS_PER_TOKEN,
     DEFAULT_CONTEXT_WINDOW,
     REPLY_RESERVE_TOKENS,
     DEFAULT_IGNORE_PATHS,
     MAX_SLICE_RUNS,
     SLICE_GATE_TOKENS,
     ConfigError,
+    IncompleteReplyError,
+    ModelEntry,
+    OpenRouterAdapter,
     FocusArea,
     FocusRecord,
     _build_line_content_index,
@@ -40,6 +48,8 @@ from agent_code_reviewer import (  # noqa: E402
     filter_diff,
     focus_file_path,
     prune_focus_paths,
+    require_complete,
+    review_pr,
     slice_gate_reason,
     write_focus_file,
     VersionReport,
@@ -47,6 +57,7 @@ from agent_code_reviewer import (  # noqa: E402
     format_focus_section,
     format_new_families,
     format_version_report,
+    get_pr_diff,
     is_prerelease,
     is_transient,
     load_cached_catalog,
@@ -353,17 +364,47 @@ class ContextWindowTests(unittest.TestCase):
         self.assertEqual(toml.count("context_window"), len(roster.entries) + 1)  # + header doc
 
 
+def _entry(**fields: object) -> ModelEntry:
+    model = {"key": "a", "name": "A", "access_method": "openrouter", "id": "v/m", **fields}
+    return parse_config(_raw([model])).entries[0]
+
+
+class OutputBudgetTests(unittest.TestCase):
+    def test_unset_means_no_cap(self):
+        self.assertIsNone(_entry().max_output_tokens)
+
+    def test_explicit_value_wins(self):
+        entry = _entry(context_window=1_050_000, max_output_tokens=128_000)
+        self.assertEqual(entry.max_output_tokens, 128_000)
+
+    def test_rejects_non_positive_non_int_or_not_below_the_window(self):
+        for bad in (0, -1, "128K", True, 200_000):
+            with self.subTest(bad=bad), self.assertRaises(ConfigError):
+                _entry(context_window=200_000, max_output_tokens=bad)
+
+
 class DiffBudgetTests(unittest.TestCase):
-    def test_budget_is_window_minus_reply_reserve_in_chars_minus_overhead(self):
-        budget = diff_char_budget(context_window=100_000, overhead_chars=1_000)
-        self.assertEqual(budget, (100_000 - REPLY_RESERVE_TOKENS) * 4 - 1_000)
+    def test_budget_is_window_minus_output_budget_in_chars_minus_overhead(self):
+        budget = diff_char_budget(_entry(context_window=100_000), overhead_chars=1_000)
+        self.assertEqual(budget, int((100_000 - REPLY_RESERVE_TOKENS) * CHARS_PER_TOKEN) - 1_000)
+        wide = _entry(context_window=1_050_000, max_output_tokens=128_000)
+        self.assertEqual(diff_char_budget(wide, overhead_chars=0), int(922_000 * CHARS_PER_TOKEN))
 
     def test_budget_never_negative(self):
-        self.assertEqual(diff_char_budget(context_window=1_000, overhead_chars=10), 0)
+        tight = _entry(context_window=1_000, max_output_tokens=999)
+        self.assertEqual(diff_char_budget(tight, overhead_chars=10), 0)
 
     def test_old_hardcoded_cap_is_far_below_a_million_token_window(self):
         """Regression guard for the 100 KB cap that forced layer-wise slicing."""
-        self.assertGreater(diff_char_budget(1_050_000, 0), 759_000 * 4)
+        self.assertGreater(
+            diff_char_budget(_entry(context_window=1_050_000), 0), int(759_000 * CHARS_PER_TOKEN)
+        )
+
+    def test_estimate_covers_a_measured_prompt(self):
+        """werkshop PR #85: 1,557,816 chars of annotated diff drew a 479,897-token
+        prompt (diff plus system prompt and description). The diff estimate alone
+        must not undercount it."""
+        self.assertGreaterEqual(int(1_557_816 / CHARS_PER_TOKEN), 479_897)
 
     def test_entries_that_fit_lists_only_wide_enough_windows_in_roster_order(self):
         def entry(key, window):
@@ -377,7 +418,7 @@ class DiffBudgetTests(unittest.TestCase):
 
         models = [entry("small", 200_000), entry("big", 1_050_000), entry("mid", 500_000)]
         roster = parse_config(_raw(models, default="small"))
-        needed_chars = 759_000 * 4  # a ~760K-token diff; only the 1M window takes it
+        needed_chars = int(759_000 * CHARS_PER_TOKEN)  # a ~760K-token diff; only the 1M window takes it
         fits = entries_that_fit(roster, needed_chars=needed_chars, overhead_chars=5_000)
         self.assertEqual([e.key for e in fits], ["big"])
 
@@ -399,6 +440,184 @@ diff --git a/docs/x.md b/docs/x.md
 """
 
 
+TOO_LARGE = (
+    "could not find pull request diff: HTTP 406: Sorry, the diff exceeded the maximum "
+    "number of lines (20000)\nPullRequest.diff too_large\n"
+)
+PR_HEAD = "0123456789abcdef0123456789abcdef01234567"
+
+
+def fake_subprocess(*answers: tuple[int, str, str]):
+    """Patch subprocess.run to answer (returncode, stdout, stderr) in call order,
+    so nothing touches gh, git, or the network. Yields the argv of every call."""
+    calls: list[list[str]] = []
+    queue = list(answers)
+
+    def run(args: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        code, out, err = queue.pop(0)
+        return subprocess.CompletedProcess(args, code, out, err)
+
+    return mock.patch.object(subprocess, "run", run), calls
+
+
+class PrDiffTests(unittest.TestCase):
+    def _get(self, *answers: tuple[int, str, str]) -> tuple[str, list[list[str]], str]:
+        patch, calls = fake_subprocess(*answers)
+        err = StringIO()
+        with patch, redirect_stderr(err):
+            diff = get_pr_diff("85")
+        return diff, calls, err.getvalue()
+
+    def test_served_diff_is_used_as_is(self):
+        diff, calls, _ = self._get((0, SAMPLE_DIFF, ""))
+        self.assertEqual(diff, SAMPLE_DIFF)
+        self.assertEqual(len(calls), 1)
+
+    def test_too_large_diff_is_built_locally_at_the_pr_head(self):
+        diff, calls, err = self._get(
+            (1, "", TOO_LARGE),
+            (0, f'{{"baseRefName": "main", "headRefOid": "{PR_HEAD}"}}', ""),
+            (0, "", ""),
+            (0, SAMPLE_DIFF, ""),
+        )
+        self.assertEqual(diff, SAMPLE_DIFF)
+        fetch, local = calls[2], calls[3]
+        self.assertEqual(fetch[:2], ["git", "fetch"])
+        self.assertIn("pull/85/head", fetch)
+        self.assertIn("+refs/heads/main:refs/remotes/origin/main", fetch)
+        self.assertEqual(local[:2], ["git", "diff"])
+        self.assertEqual(local[-1], f"origin/main...{PR_HEAD}")
+        self.assertEqual(len(err.splitlines()), 1)
+        self.assertIn("built it locally", err)
+
+    def test_other_gh_failures_still_exit(self):
+        with self.assertRaises(SystemExit):
+            self._get((1, "", "HTTP 404: Not Found"))
+
+    def test_failed_local_build_exits(self):
+        with self.assertRaises(SystemExit):
+            self._get(
+                (1, "", TOO_LARGE),
+                (0, f'{{"baseRefName": "main", "headRefOid": "{PR_HEAD}"}}', ""),
+                (128, "", "fatal: 'origin' does not appear to be a git repository"),
+            )
+
+
+def _openrouter_payload(content: str | None, finish: str) -> dict[str, object]:
+    return {
+        "id": "gen-1761100000-abc",
+        "choices": [{"finish_reason": finish, "message": {"role": "assistant", "content": content}}],
+        "usage": {
+            "prompt_tokens": 389454,
+            "completion_tokens": 128000,
+            "completion_tokens_details": {"reasoning_tokens": 128000},
+        },
+    }
+
+
+class ModelReplyTests(unittest.TestCase):
+    def setUp(self):
+        self.openrouter = make_adapter(_entry(context_window=1_050_000, max_output_tokens=128_000))
+
+    def test_a_declared_budget_is_sent_and_an_unset_one_is_not(self):
+        self.assertEqual(self.openrouter.build_request("sys", [])["max_tokens"], 128_000)
+        self.assertNotIn("max_tokens", make_adapter(_entry()).build_request("sys", []))
+        gemini = make_adapter(_entry(access_method="gemini_api", max_output_tokens=9_000))
+        body = gemini.build_request("sys", [])
+        self.assertEqual(body["generationConfig"]["maxOutputTokens"], 9_000)
+        bare = make_adapter(_entry(access_method="gemini_api")).build_request("sys", [])
+        self.assertNotIn("generationConfig", bare)
+        openai = make_adapter(_entry(access_method="openai_api", max_output_tokens=9_000))
+        self.assertEqual(openai.build_request("sys", [])["max_output_tokens"], 9_000)
+        bare = make_adapter(_entry(access_method="openai_api")).build_request("sys", [])
+        self.assertNotIn("max_output_tokens", bare)
+
+    def test_normal_stop_passes_with_usage_and_generation_id(self):
+        reply = require_complete(
+            self.openrouter.extract_response(_openrouter_payload('{"summary": "ok"}', "stop"))
+        )
+        self.assertEqual(reply.generation_id, "gen-1761100000-abc")
+        self.assertEqual((reply.prompt_tokens, reply.reasoning_tokens), (389_454, 128_000))
+
+    def test_empty_content_is_refused_with_stop_reason_usage_and_generation_id(self):
+        reply = self.openrouter.extract_response(_openrouter_payload(None, "stop"))
+        with self.assertRaises(IncompleteReplyError) as caught:
+            require_complete(reply)
+        message = str(caught.exception)
+        self.assertIn("empty", message)
+        self.assertIn("stop reason stop", message)
+        self.assertIn("389,454 prompt + 128,000 completion (128,000 reasoning)", message)
+        self.assertIn("gen-1761100000-abc", message)
+
+    def test_length_stop_is_refused_even_with_text(self):
+        reply = self.openrouter.extract_response(_openrouter_payload('{"summary": "trunc', "length"))
+        with self.assertRaisesRegex(IncompleteReplyError, "cut off: stop reason length"):
+            require_complete(reply)
+
+    def test_gemini_max_tokens_is_cut_off_and_counts_thoughts_as_completion(self):
+        gemini = make_adapter(_entry(access_method="gemini_api"))
+        reply = gemini.extract_response(
+            {
+                "candidates": [{"finishReason": "MAX_TOKENS", "content": {"parts": [{"text": "{"}]}}],
+                "usageMetadata": {
+                    "promptTokenCount": 10,
+                    "candidatesTokenCount": 5,
+                    "thoughtsTokenCount": 7,
+                },
+            }
+        )
+        self.assertFalse(reply.complete)
+        self.assertEqual((reply.completion_tokens, reply.reasoning_tokens), (12, 7))
+
+    def test_openai_incomplete_reports_its_reason(self):
+        openai = make_adapter(_entry(access_method="openai_api"))
+        reply = openai.extract_response(
+            {
+                "id": "resp_1",
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+                "output_text": "{",
+                "usage": {"input_tokens": 10, "output_tokens": 32000},
+            }
+        )
+        self.assertEqual((reply.stop_reason, reply.complete), ("max_output_tokens", False))
+        self.assertEqual(reply.signature, "resp_1")
+
+
+class _CannedOpenRouter(OpenRouterAdapter):
+    """Answers at the network boundary: call_api returns a canned response."""
+
+    def __init__(self, entry: ModelEntry, canned: dict[str, object]) -> None:
+        super().__init__(entry)
+        self.canned = canned
+
+    def call_api(self, request_body):
+        return self.canned
+
+
+class ReviewPrRefusalTests(unittest.TestCase):
+    def _review(self, payload: dict[str, object]) -> list[list[str]]:
+        roster = parse_config(_raw([{"key": "a", "name": "A", "access_method": "openrouter", "id": "v/m"}]))
+        adapter = _CannedOpenRouter(roster.entries[0], payload)
+        patch, calls = fake_subprocess(
+            (0, SAMPLE_DIFF, ""),
+            (0, f'{{"title": "t", "body": "b", "headRefOid": "{PR_HEAD}"}}', ""),
+            (0, "owner/repo\n", ""),
+        )
+        with patch, redirect_stderr(StringIO()), self.assertRaises(IncompleteReplyError):
+            review_pr("85", adapter, roster)
+        return calls
+
+    def test_empty_reply_posts_nothing(self):
+        calls = self._review(_openrouter_payload("", "stop"))
+        self.assertFalse([c for c in calls if c[:2] == ["gh", "api"]])
+
+    def test_length_cut_reply_posts_nothing(self):
+        calls = self._review(_openrouter_payload('{"summary": "trunc', "length"))
+        self.assertFalse([c for c in calls if c[:2] == ["gh", "api"]])
+
+
 class IgnorePathTests(unittest.TestCase):
     def test_bracketed_route_path_matches_literally(self):
         path = "app/api/auth/[...nextauth]/route.ts"
@@ -416,6 +635,18 @@ class IgnorePathTests(unittest.TestCase):
         )
         kept, dropped = filter_diff(diff, list(DEFAULT_IGNORE_PATHS))
         self.assertEqual(dropped, ["pnpm-lock.yaml"])
+        self.assertIn("src/a.ts", kept)
+
+    def test_default_ignores_drop_prose_and_license_text(self):
+        prose = [
+            "README.md",
+            "docs/rfcs/0009.md",
+            ".trail/learnings/fetch-quirk.md",
+            "images/runner-base/licenses/open-code-review-LICENSE",
+        ]
+        diff = "".join(f"diff --git a/{p} b/{p}\n+x\n" for p in [*prose, "src/a.ts"])
+        kept, dropped = filter_diff(diff, list(DEFAULT_IGNORE_PATHS))
+        self.assertEqual(dropped, prose)
         self.assertIn("src/a.ts", kept)
 
 
@@ -1201,6 +1432,13 @@ class CatalogParseTests(unittest.TestCase):
         models = parse_openrouter_catalog({"data": [{"id": "x/y", "name": "X"}]})
         self.assertEqual(models[0].prompt_price, 0.0)
         self.assertEqual(models[0].context_length, 0)
+        self.assertEqual(models[0].max_output, 0)
+
+    def test_max_output_is_the_top_providers_completion_cap(self):
+        raw = {"id": "x/y", "top_provider": {"max_completion_tokens": 128000}}
+        model = parse_openrouter_catalog({"data": [raw]})[0]
+        self.assertEqual(model.max_output, 128_000)
+        self.assertIn("128K", format_catalog([model]))
 
     def test_entries_without_an_id_are_skipped(self):
         self.assertEqual(parse_openrouter_catalog({"data": [{"name": "nameless"}]}), [])
