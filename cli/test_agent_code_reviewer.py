@@ -628,6 +628,18 @@ class IgnorePathTests(unittest.TestCase):
         self.assertEqual(dropped, ["pnpm-lock.yaml"])
         self.assertIn("src/a.ts", kept)
 
+    def test_default_ignores_drop_prose_and_license_text(self):
+        prose = [
+            "README.md",
+            "docs/rfcs/0009.md",
+            ".trail/learnings/fetch-quirk.md",
+            "images/runner-base/licenses/open-code-review-LICENSE",
+        ]
+        diff = "".join(f"diff --git a/{p} b/{p}\n+x\n" for p in [*prose, "src/a.ts"])
+        kept, dropped = filter_diff(diff, list(DEFAULT_IGNORE_PATHS))
+        self.assertEqual(dropped, prose)
+        self.assertIn("src/a.ts", kept)
+
 
 class OnlyPathTests(unittest.TestCase):
     DIFF = (

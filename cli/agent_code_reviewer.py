@@ -216,12 +216,15 @@ PR_REVIEW_SYSTEM_PROMPT: str = (
     "Return ONLY valid JSON, no markdown fences."
 )
 
-# Diff hunks for these paths are dropped from PR review input. Plans / specs
-# under docs/superpowers are agentic-coding scratch material, and lockfiles are
-# generated: neither is code-relevant for review, and a lockfile alone can be
-# 10K+ tokens that crowd out the real diff.
+# Diff hunks for these paths are dropped from PR review input. Prose (docs,
+# docs/superpowers plans, .trail learnings) and license text are not code, and
+# lockfiles and snapshots are generated: none is code-relevant for review, and a
+# lockfile alone can be 10K+ tokens that crowd out the real diff.
 DEFAULT_IGNORE_PATHS: list[str] = [
+    "*.md",
+    ".trail/",
     "docs/superpowers/",
+    "*LICENSE*",
     "package-lock.json",
     "pnpm-lock.yaml",
     "yarn.lock",
