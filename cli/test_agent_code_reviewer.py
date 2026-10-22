@@ -5,6 +5,7 @@ Run with: python3 -m unittest cli.test_agent_code_reviewer -v
 
 from __future__ import annotations
 
+import re
 import sys
 import tempfile
 import unittest
@@ -1089,6 +1090,16 @@ class BuildPrPromptTests(unittest.TestCase):
         self.assertLess(i_files, i_diff)
         self.assertIn("D4: resume adds max_attempts.", prompt)
         self.assertIn("</context_files>", prompt)
+
+    def test_attached_files_are_line_numbered(self):
+        prompt = build_pr_prompt("", "", "", [("a.ts", "const a = 1;\n  system: x,")])
+        self.assertIn("     1\tconst a = 1;\n     2\t  system: x,\n</file>", prompt)
+
+    def test_no_attached_line_starts_with_a_role_label(self):
+        # OpenRouter 403s a prompt holding a line like `system: x`.
+        prompt = build_pr_prompt("", "", "", [("a.ts", "system: x")])
+        role_label = re.compile(r"^\s*(system|developer|user|assistant|tool)\s*:", re.M)
+        self.assertIsNone(role_label.search(prompt))
 
 
 class RosterLookupTests(unittest.TestCase):
