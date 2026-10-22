@@ -259,8 +259,10 @@ OPTIONAL_FIELDS: tuple[str, ...] = ("tag", "store", "context_window", "max_outpu
 DEFAULT_CONTEXT_WINDOW: int = 128_000
 
 # Rough chars-per-token for code and diffs, used to turn a token window into a
-# character budget without a tokenizer dependency.
-CHARS_PER_TOKEN: int = 4
+# character budget without a tokenizer dependency. Set a little below the ~3.3
+# measured on a large TypeScript PR, so the estimate errs high and a diff near
+# the limit is refused here (exit 3) rather than by the model.
+CHARS_PER_TOKEN: float = 3.2
 
 # Tokens held back from the window for the reply when sizing a --pr diff, for
 # an entry that declares no `max_output_tokens`. Such an entry sends no output
@@ -1825,7 +1827,7 @@ def diff_char_budget(entry: ModelEntry, overhead_chars: int) -> int:
     """Characters of annotated diff that fit beside `overhead_chars` of prompt
     (system prompt, PR description, attached files) with the entry's output budget held back."""
     room = entry.context_window - (entry.max_output_tokens or REPLY_RESERVE_TOKENS)
-    return max(0, room * CHARS_PER_TOKEN - overhead_chars)
+    return max(0, int(room * CHARS_PER_TOKEN) - overhead_chars)
 
 
 def entries_that_fit(roster: Roster, needed_chars: int, overhead_chars: int) -> list[ModelEntry]:
@@ -2076,7 +2078,7 @@ def review_pr(
     head = pr_info.get("headRefOid", "")
     repo_slug = get_repo_slug()
     focus_path = focus_file_path(pr_number, repo_slug)
-    diff_tokens = len(annotated_diff) // CHARS_PER_TOKEN
+    diff_tokens = int(len(annotated_diff) / CHARS_PER_TOKEN)
 
     # A slice runs only when the whole pass earned it. Checked before the
     # size check so a refused slice costs nothing, not even a token estimate.
@@ -2119,10 +2121,10 @@ def review_pr(
             f"{entry.key} ({_compact_count(entry.context_window)} window, "
             f"{_compact_count(entry.max_output_tokens or REPLY_RESERVE_TOKENS)} of it for output) "
             "has room for "
-            f"~{budget // CHARS_PER_TOKEN:,} beside the prompt. {hint}"
+            f"~{int(budget / CHARS_PER_TOKEN):,} beside the prompt. {hint}"
         )
     print(
-        f"--> Diff ~{diff_tokens:,} tokens of ~{budget // CHARS_PER_TOKEN:,} available on {entry.key}",
+        f"--> Diff ~{diff_tokens:,} tokens of ~{int(budget / CHARS_PER_TOKEN):,} available on {entry.key}",
         file=sys.stderr,
     )
 
@@ -2467,7 +2469,7 @@ def main() -> None:
         full_message += f"\n\n```\n{number_lines(file_content)}\n```"
 
     # Token estimate for large context warning
-    token_est = len(full_message) // 4
+    token_est = int(len(full_message) / CHARS_PER_TOKEN)
     if token_est > 32000:
         print(
             f"--> Large context: ~{token_est} tokens. Consider context caching.",

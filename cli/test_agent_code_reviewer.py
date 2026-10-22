@@ -21,6 +21,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from agent_code_reviewer import (  # noqa: E402
+    CHARS_PER_TOKEN,
     DEFAULT_CONTEXT_WINDOW,
     REPLY_RESERVE_TOKENS,
     DEFAULT_IGNORE_PATHS,
@@ -385,9 +386,9 @@ class OutputBudgetTests(unittest.TestCase):
 class DiffBudgetTests(unittest.TestCase):
     def test_budget_is_window_minus_output_budget_in_chars_minus_overhead(self):
         budget = diff_char_budget(_entry(context_window=100_000), overhead_chars=1_000)
-        self.assertEqual(budget, (100_000 - REPLY_RESERVE_TOKENS) * 4 - 1_000)
+        self.assertEqual(budget, int((100_000 - REPLY_RESERVE_TOKENS) * CHARS_PER_TOKEN) - 1_000)
         wide = _entry(context_window=1_050_000, max_output_tokens=128_000)
-        self.assertEqual(diff_char_budget(wide, overhead_chars=0), 922_000 * 4)
+        self.assertEqual(diff_char_budget(wide, overhead_chars=0), int(922_000 * CHARS_PER_TOKEN))
 
     def test_budget_never_negative(self):
         tight = _entry(context_window=1_000, max_output_tokens=999)
@@ -395,7 +396,15 @@ class DiffBudgetTests(unittest.TestCase):
 
     def test_old_hardcoded_cap_is_far_below_a_million_token_window(self):
         """Regression guard for the 100 KB cap that forced layer-wise slicing."""
-        self.assertGreater(diff_char_budget(_entry(context_window=1_050_000), 0), 759_000 * 4)
+        self.assertGreater(
+            diff_char_budget(_entry(context_window=1_050_000), 0), int(759_000 * CHARS_PER_TOKEN)
+        )
+
+    def test_estimate_covers_a_measured_prompt(self):
+        """werkshop PR #85: 1,557,816 chars of annotated diff drew a 479,897-token
+        prompt (diff plus system prompt and description). The diff estimate alone
+        must not undercount it."""
+        self.assertGreaterEqual(int(1_557_816 / CHARS_PER_TOKEN), 479_897)
 
     def test_entries_that_fit_lists_only_wide_enough_windows_in_roster_order(self):
         def entry(key, window):
@@ -409,7 +418,7 @@ class DiffBudgetTests(unittest.TestCase):
 
         models = [entry("small", 200_000), entry("big", 1_050_000), entry("mid", 500_000)]
         roster = parse_config(_raw(models, default="small"))
-        needed_chars = 759_000 * 4  # a ~760K-token diff; only the 1M window takes it
+        needed_chars = int(759_000 * CHARS_PER_TOKEN)  # a ~760K-token diff; only the 1M window takes it
         fits = entries_that_fit(roster, needed_chars=needed_chars, overhead_chars=5_000)
         self.assertEqual([e.key for e in fits], ["big"])
 
