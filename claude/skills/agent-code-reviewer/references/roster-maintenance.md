@@ -30,7 +30,7 @@ Pick from what it returns:
 
 - **Take the pinned id, not a floating alias.** Aliases are annotated `alias -> <target>` and sorted last. An alias silently changes model under an entry whose `key` and `name` still claim the old one.
 - **Skip `:batch` variants.** Half price, but queued rather than interactive — wrong shape for a review loop you are waiting on.
-- **Copy the context window and max output the catalog prints.** A window guessed too high overflows the model instead of failing early; an output budget left at the 32K default can cut a reasoning model's review off on a large diff (exit 5).
+- **Copy the context window the catalog prints.** A guess that is too high overflows the model instead of failing early. Leave `max_output_tokens` unset unless a review stops on `length` (exit 5), and then set it no higher than the catalog's MAX OUT: it is held back from the window.
 - **Set `tag`** when the family already has one (the OpenAI/Codex entries share `CODEX`); otherwise it defaults to the key upper-cased and becomes a public label on PR comments. Never `CLAUDE`: `AGENTS.md` reserves that for the authoring agent's own replies.
 - **Confirm with `--list`**, which resolves the roster and shows whether the entry's API key is set.
 

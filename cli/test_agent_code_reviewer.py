@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from agent_code_reviewer import (  # noqa: E402
     DEFAULT_CONTEXT_WINDOW,
-    DEFAULT_MAX_OUTPUT_TOKENS,
+    REPLY_RESERVE_TOKENS,
     DEFAULT_IGNORE_PATHS,
     MAX_SLICE_RUNS,
     SLICE_GATE_TOKENS,
@@ -369,8 +369,8 @@ def _entry(**fields: object) -> ModelEntry:
 
 
 class OutputBudgetTests(unittest.TestCase):
-    def test_defaults_when_omitted(self):
-        self.assertEqual(_entry().max_output_tokens, DEFAULT_MAX_OUTPUT_TOKENS)
+    def test_unset_means_no_cap(self):
+        self.assertIsNone(_entry().max_output_tokens)
 
     def test_explicit_value_wins(self):
         entry = _entry(context_window=1_050_000, max_output_tokens=128_000)
@@ -385,7 +385,7 @@ class OutputBudgetTests(unittest.TestCase):
 class DiffBudgetTests(unittest.TestCase):
     def test_budget_is_window_minus_output_budget_in_chars_minus_overhead(self):
         budget = diff_char_budget(_entry(context_window=100_000), overhead_chars=1_000)
-        self.assertEqual(budget, (100_000 - DEFAULT_MAX_OUTPUT_TOKENS) * 4 - 1_000)
+        self.assertEqual(budget, (100_000 - REPLY_RESERVE_TOKENS) * 4 - 1_000)
         wide = _entry(context_window=1_050_000, max_output_tokens=128_000)
         self.assertEqual(diff_char_budget(wide, overhead_chars=0), 922_000 * 4)
 
@@ -511,13 +511,18 @@ class ModelReplyTests(unittest.TestCase):
     def setUp(self):
         self.openrouter = make_adapter(_entry(context_window=1_050_000, max_output_tokens=128_000))
 
-    def test_every_request_carries_the_output_budget(self):
+    def test_a_declared_budget_is_sent_and_an_unset_one_is_not(self):
         self.assertEqual(self.openrouter.build_request("sys", [])["max_tokens"], 128_000)
+        self.assertNotIn("max_tokens", make_adapter(_entry()).build_request("sys", []))
         gemini = make_adapter(_entry(access_method="gemini_api", max_output_tokens=9_000))
         body = gemini.build_request("sys", [])
         self.assertEqual(body["generationConfig"]["maxOutputTokens"], 9_000)
+        bare = make_adapter(_entry(access_method="gemini_api")).build_request("sys", [])
+        self.assertNotIn("generationConfig", bare)
         openai = make_adapter(_entry(access_method="openai_api", max_output_tokens=9_000))
         self.assertEqual(openai.build_request("sys", [])["max_output_tokens"], 9_000)
+        bare = make_adapter(_entry(access_method="openai_api")).build_request("sys", [])
+        self.assertNotIn("max_output_tokens", bare)
 
     def test_normal_stop_passes_with_usage_and_generation_id(self):
         reply = require_complete(

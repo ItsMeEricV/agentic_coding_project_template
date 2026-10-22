@@ -44,7 +44,7 @@ PR Review Mode (--pr):
     uv run cli/agent_code_reviewer.py --pr 60 --file docs/rfcs/0009.md
 
   The whole diff goes in one pass, sized to the entry's `context_window` less
-  its `max_output_tokens`. A diff that does not fit is refused (exit 3) with the roster
+  its `max_output_tokens` (32K if unset). A diff that does not fit is refused (exit 3) with the roster
   entries that would take it — nothing is silently truncated. `--file` (repeatable)
   attaches design docs or sibling-layer code as read-only context so the
   reviewer judges the diff against the real contract, not a guess at it.
@@ -259,12 +259,11 @@ DEFAULT_CONTEXT_WINDOW: int = 128_000
 # character budget without a tokenizer dependency.
 CHARS_PER_TOKEN: int = 4
 
-# Output budget for an entry that declares no `max_output_tokens`. It is sent
-# with every call and held back from the window when sizing a --pr diff, since
-# the window counts reply and reasoning tokens too. Below every roster model's
-# cap, so no provider refuses it; a reasoning model on a large diff may need
-# its real figure (`--find-model` prints it).
-DEFAULT_MAX_OUTPUT_TOKENS: int = 32_000
+# Tokens held back from the window for the reply when sizing a --pr diff, for
+# an entry that declares no `max_output_tokens`. Such an entry sends no output
+# cap, so the provider's own default applies; one that declares it sends it as
+# the cap and holds back exactly that.
+REPLY_RESERVE_TOKENS: int = 32_000
 
 # Where per-model history and per-PR focus files live. Tests pass a temp dir.
 STATE_DIR: Path = Path("/tmp")
@@ -290,7 +289,7 @@ class ModelEntry:
     tag: str
     store: bool = False
     context_window: int = DEFAULT_CONTEXT_WINDOW
-    max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
+    max_output_tokens: int | None = None  # None: send no cap
 
 
 class DiffTooLargeError(Exception):
@@ -425,9 +424,11 @@ def parse_config(raw: JsonDict) -> Roster:
             )
 
         context_window = _positive_int(model, "context_window", DEFAULT_CONTEXT_WINDOW, where)
-        max_output = _positive_int(model, "max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS, where)
-        if max_output >= context_window:
-            raise ConfigError(f"{where}: `max_output_tokens` must be below `context_window`")
+        max_output = None
+        if "max_output_tokens" in model:
+            max_output = _positive_int(model, "max_output_tokens", 0, where)
+            if max_output >= context_window:
+                raise ConfigError(f"{where}: `max_output_tokens` must be below `context_window`")
 
         entries.append(
             ModelEntry(
@@ -477,7 +478,7 @@ def format_roster(roster: Roster, verbose: bool = False) -> str:
             entry.access_method,
             entry.id,
             _compact_count(entry.context_window),
-            _compact_count(entry.max_output_tokens),
+            _compact_count(entry.max_output_tokens) if entry.max_output_tokens else "-",
             "set" if adapter.api_key() else f"MISSING {adapter.api_key_env_var()}",
         ]
         if verbose:
@@ -1083,11 +1084,13 @@ class GeminiAdapter(Adapter):
         return history
 
     def build_request(self, system_prompt: str, history: list[JsonDict]) -> JsonDict:
-        return {
+        body: JsonDict = {
             "system_instruction": {"parts": [{"text": system_prompt}]},
             "contents": history,
-            "generationConfig": {"maxOutputTokens": self.entry.max_output_tokens},
         }
+        if self.entry.max_output_tokens:
+            body["generationConfig"] = {"maxOutputTokens": self.entry.max_output_tokens}
+        return body
 
     def call_api(self, request_body: JsonDict) -> JsonDict:
         key = self.api_key()
@@ -1201,8 +1204,9 @@ class OpenAIAdapter(Adapter):
         body: JsonDict = {
             "instructions": system_prompt,
             "store": store,
-            "max_output_tokens": self.entry.max_output_tokens,
         }
+        if self.entry.max_output_tokens:
+            body["max_output_tokens"] = self.entry.max_output_tokens
         if store:
             latest_user = ""
             for msg in reversed(history):
@@ -1301,9 +1305,12 @@ class OpenRouterAdapter(Adapter):
             for msg in history
             if msg.get("role") in ("user", "assistant", "model")
         ]
-        # max_tokens, not max_completion_tokens: every roster model on
-        # OpenRouter takes the former, and several reject the latter.
-        return {"messages": messages, "max_tokens": self.entry.max_output_tokens}
+        body: JsonDict = {"messages": messages}
+        if self.entry.max_output_tokens:
+            # max_tokens, not max_completion_tokens: every roster model on
+            # OpenRouter takes the former, and several reject the latter.
+            body["max_tokens"] = self.entry.max_output_tokens
+        return body
 
     def call_api(self, request_body: JsonDict) -> JsonDict:
         # Deferred import: the SDK is declared in this script's PEP 723 header,
@@ -1322,11 +1329,7 @@ class OpenRouterAdapter(Adapter):
 
         # timeout_ms matches the 300s the urllib adapters pass to urlopen.
         with OpenRouter(api_key=self.api_key(), timeout_ms=300_000) as client:
-            response = client.chat.send(
-                model=self.entry.id,
-                messages=request_body["messages"],
-                max_tokens=request_body["max_tokens"],
-            )
+            response = client.chat.send(model=self.entry.id, **request_body)
         return response.model_dump(mode="json")
 
     def extract_response(self, data: JsonDict) -> ModelReply:
@@ -1818,7 +1821,7 @@ def post_pr_review(
 def diff_char_budget(entry: ModelEntry, overhead_chars: int) -> int:
     """Characters of annotated diff that fit beside `overhead_chars` of prompt
     (system prompt, PR description, attached files) with the entry's output budget held back."""
-    room = entry.context_window - entry.max_output_tokens
+    room = entry.context_window - (entry.max_output_tokens or REPLY_RESERVE_TOKENS)
     return max(0, room * CHARS_PER_TOKEN - overhead_chars)
 
 
@@ -2111,7 +2114,8 @@ def review_pr(
         raise DiffTooLargeError(
             f"diff is ~{diff_tokens:,} tokens after annotation; "
             f"{entry.key} ({_compact_count(entry.context_window)} window, "
-            f"{_compact_count(entry.max_output_tokens)} of it for output) has room for "
+            f"{_compact_count(entry.max_output_tokens or REPLY_RESERVE_TOKENS)} of it for output) "
+            "has room for "
             f"~{budget // CHARS_PER_TOKEN:,} beside the prompt. {hint}"
         )
     print(

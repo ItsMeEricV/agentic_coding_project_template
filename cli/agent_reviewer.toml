@@ -34,10 +34,11 @@ catalog_reviewed = 2026-10-20
 #                  does not fit is refused with the entries that would take it.
 #                  Copy the figure `--find-model` prints; a guess that is too
 #                  high overflows the model instead of failing early.
-#   max_output_tokens OPTIONAL, tokens, default 32K. Sent as the call's output
-#                  cap and held back from the window when sizing a --pr
-#                  diff. Reasoning counts against it: too low, and a large diff
-#                  comes back cut off (exit 5). Copy `--find-model`'s MAX OUT.
+#   max_output_tokens OPTIONAL, tokens. Sent as the call's output cap
+#                  (reasoning counts against it) and held back from the window
+#                  when sizing a --pr diff. Unset, no cap is sent, the provider's
+#                  default applies, and 32K is held back. Never above
+#                  `--find-model`'s MAX OUT.
 #   store          OPTIONAL, openai_api only, default false. Makes OpenAI retain
 #                  every payload server-side (private --pr diffs included) in
 #                  exchange for not re-sending the transcript each turn; only
