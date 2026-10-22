@@ -31,7 +31,8 @@ Setup:
                 https://platform.openai.com/api-keys
 
 PR Review Mode (--pr):
-  Fetches the PR diff via `gh`, sends it to the selected model for line-level
+  Fetches the PR diff via `gh` (built locally with `git diff` when GitHub
+  refuses one over 20,000 lines), sends it to the selected model for line-level
   review, and posts comments directly on the PR as inline review comments.
   Each comment is prefixed with the entry's attribution tag, e.g. **[GEMINI]**.
   A comment at a file and line that tag already commented on is skipped, so a
@@ -1271,17 +1272,54 @@ def make_adapter(entry: ModelEntry, state_dir: Path = STATE_DIR) -> Adapter:
 # ---------------------------------------------------------------------------
 
 
-def get_pr_diff(pr_number: str) -> str:
-    """Fetch PR diff using gh CLI."""
-    result = subprocess.run(
-        ["gh", "pr", "diff", pr_number],
-        capture_output=True,
-        text=True,
-    )
+Runner = Callable[..., subprocess.CompletedProcess[str]]
+
+
+def _run_or_exit(run: Runner, args: list[str], what: str) -> str:
+    result = run(args, capture_output=True, text=True)
     if result.returncode != 0:
-        print(f"Error fetching PR diff: {result.stderr}", file=sys.stderr)
+        print(f"Error {what}: {result.stderr}", file=sys.stderr)
         sys.exit(1)
     return result.stdout
+
+
+def get_pr_diff(pr_number: str, run: Runner = subprocess.run) -> str:
+    """Fetch PR diff using gh CLI. GitHub refuses a diff over 20,000 lines
+    (HTTP 406, too_large); that one is built locally from the same head SHA,
+    so inline comments still anchor."""
+    result = run(["gh", "pr", "diff", pr_number], capture_output=True, text=True)
+    if result.returncode == 0:
+        return result.stdout
+    if "too_large" not in result.stderr and "HTTP 406" not in result.stderr:
+        print(f"Error fetching PR diff: {result.stderr}", file=sys.stderr)
+        sys.exit(1)
+    refs = json.loads(
+        _run_or_exit(
+            run,
+            ["gh", "pr", "view", pr_number, "--json", "baseRefName,headRefOid"],
+            "fetching PR refs",
+        )
+    )
+    base, head = refs["baseRefName"], refs["headRefOid"]
+    _run_or_exit(
+        run,
+        ["git", "fetch", "--quiet", "--no-tags", "origin", f"pull/{pr_number}/head",
+         f"+refs/heads/{base}:refs/remotes/origin/{base}"],
+        "fetching PR refs from origin",
+    )
+    # Three-dot: from the merge base, as GitHub diffs a PR. Prefix flags pin
+    # the a/ b/ headers filter_diff parses, whatever the local diff config.
+    diff = _run_or_exit(
+        run,
+        ["git", "diff", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/",
+         f"origin/{base}...{head}"],
+        "building PR diff locally",
+    )
+    print(
+        f"--> GitHub refused the PR diff as too large; built it locally (origin/{base}...{head[:12]})",
+        file=sys.stderr,
+    )
+    return diff
 
 
 def _path_matches_any(path: str, patterns: list[str]) -> bool:

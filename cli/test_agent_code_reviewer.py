@@ -6,12 +6,15 @@ Run with: python3 -m unittest cli.test_agent_code_reviewer -v
 from __future__ import annotations
 
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
 import urllib.error
+from contextlib import redirect_stderr
 from datetime import date, datetime
 from email.message import Message
+from io import StringIO
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -47,6 +50,7 @@ from agent_code_reviewer import (  # noqa: E402
     format_focus_section,
     format_new_families,
     format_version_report,
+    get_pr_diff,
     is_prerelease,
     is_transient,
     load_cached_catalog,
@@ -397,6 +401,69 @@ diff --git a/docs/x.md b/docs/x.md
 -a
 +b
 """
+
+
+TOO_LARGE = (
+    "could not find pull request diff: HTTP 406: Sorry, the diff exceeded the maximum "
+    "number of lines (20000)\nPullRequest.diff too_large\n"
+)
+PR_HEAD = "0123456789abcdef0123456789abcdef01234567"
+
+
+class PrDiffTests(unittest.TestCase):
+    """`run` stands in for subprocess.run: answers are (returncode, stdout,
+    stderr) in call order, so nothing touches gh, git, or the network."""
+
+    def _run(self, *answers: tuple[int, str, str]):
+        calls: list[list[str]] = []
+        queue = list(answers)
+
+        def run(args: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            calls.append(args)
+            code, out, err = queue.pop(0)
+            return subprocess.CompletedProcess(args, code, out, err)
+
+        return run, calls
+
+    def test_served_diff_is_used_as_is(self):
+        run, calls = self._run((0, SAMPLE_DIFF, ""))
+        self.assertEqual(get_pr_diff("85", run), SAMPLE_DIFF)
+        self.assertEqual(len(calls), 1)
+
+    def test_too_large_diff_is_built_locally_at_the_pr_head(self):
+        run, calls = self._run(
+            (1, "", TOO_LARGE),
+            (0, f'{{"baseRefName": "main", "headRefOid": "{PR_HEAD}"}}', ""),
+            (0, "", ""),
+            (0, SAMPLE_DIFF, ""),
+        )
+        err = StringIO()
+        with redirect_stderr(err):
+            diff = get_pr_diff("85", run)
+        self.assertEqual(diff, SAMPLE_DIFF)
+        fetch, local = calls[2], calls[3]
+        self.assertEqual(fetch[:2], ["git", "fetch"])
+        self.assertIn("pull/85/head", fetch)
+        self.assertIn("+refs/heads/main:refs/remotes/origin/main", fetch)
+        self.assertEqual(local[:2], ["git", "diff"])
+        self.assertEqual(local[-1], f"origin/main...{PR_HEAD}")
+        self.assertEqual(len(err.getvalue().splitlines()), 1)
+        self.assertIn("built it locally", err.getvalue())
+
+    def test_other_gh_failures_still_exit(self):
+        run, calls = self._run((1, "", "HTTP 404: Not Found"))
+        with redirect_stderr(StringIO()), self.assertRaises(SystemExit):
+            get_pr_diff("85", run)
+        self.assertEqual(len(calls), 1)
+
+    def test_failed_local_build_exits(self):
+        run, _ = self._run(
+            (1, "", TOO_LARGE),
+            (0, f'{{"baseRefName": "main", "headRefOid": "{PR_HEAD}"}}', ""),
+            (128, "", "fatal: 'origin' does not appear to be a git repository"),
+        )
+        with redirect_stderr(StringIO()), self.assertRaises(SystemExit):
+            get_pr_diff("85", run)
 
 
 class IgnorePathTests(unittest.TestCase):
