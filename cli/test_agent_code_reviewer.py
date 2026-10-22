@@ -16,6 +16,7 @@ from datetime import date, datetime
 from email.message import Message
 from io import StringIO
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -410,36 +411,40 @@ TOO_LARGE = (
 PR_HEAD = "0123456789abcdef0123456789abcdef01234567"
 
 
+def fake_subprocess(*answers: tuple[int, str, str]):
+    """Patch subprocess.run to answer (returncode, stdout, stderr) in call order,
+    so nothing touches gh, git, or the network. Yields the argv of every call."""
+    calls: list[list[str]] = []
+    queue = list(answers)
+
+    def run(args: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        code, out, err = queue.pop(0)
+        return subprocess.CompletedProcess(args, code, out, err)
+
+    return mock.patch.object(subprocess, "run", run), calls
+
+
 class PrDiffTests(unittest.TestCase):
-    """`run` stands in for subprocess.run: answers are (returncode, stdout,
-    stderr) in call order, so nothing touches gh, git, or the network."""
-
-    def _run(self, *answers: tuple[int, str, str]):
-        calls: list[list[str]] = []
-        queue = list(answers)
-
-        def run(args: list[str], **_: object) -> subprocess.CompletedProcess[str]:
-            calls.append(args)
-            code, out, err = queue.pop(0)
-            return subprocess.CompletedProcess(args, code, out, err)
-
-        return run, calls
+    def _get(self, *answers: tuple[int, str, str]) -> tuple[str, list[list[str]], str]:
+        patch, calls = fake_subprocess(*answers)
+        err = StringIO()
+        with patch, redirect_stderr(err):
+            diff = get_pr_diff("85")
+        return diff, calls, err.getvalue()
 
     def test_served_diff_is_used_as_is(self):
-        run, calls = self._run((0, SAMPLE_DIFF, ""))
-        self.assertEqual(get_pr_diff("85", run), SAMPLE_DIFF)
+        diff, calls, _ = self._get((0, SAMPLE_DIFF, ""))
+        self.assertEqual(diff, SAMPLE_DIFF)
         self.assertEqual(len(calls), 1)
 
     def test_too_large_diff_is_built_locally_at_the_pr_head(self):
-        run, calls = self._run(
+        diff, calls, err = self._get(
             (1, "", TOO_LARGE),
             (0, f'{{"baseRefName": "main", "headRefOid": "{PR_HEAD}"}}', ""),
             (0, "", ""),
             (0, SAMPLE_DIFF, ""),
         )
-        err = StringIO()
-        with redirect_stderr(err):
-            diff = get_pr_diff("85", run)
         self.assertEqual(diff, SAMPLE_DIFF)
         fetch, local = calls[2], calls[3]
         self.assertEqual(fetch[:2], ["git", "fetch"])
@@ -447,23 +452,20 @@ class PrDiffTests(unittest.TestCase):
         self.assertIn("+refs/heads/main:refs/remotes/origin/main", fetch)
         self.assertEqual(local[:2], ["git", "diff"])
         self.assertEqual(local[-1], f"origin/main...{PR_HEAD}")
-        self.assertEqual(len(err.getvalue().splitlines()), 1)
-        self.assertIn("built it locally", err.getvalue())
+        self.assertEqual(len(err.splitlines()), 1)
+        self.assertIn("built it locally", err)
 
     def test_other_gh_failures_still_exit(self):
-        run, calls = self._run((1, "", "HTTP 404: Not Found"))
-        with redirect_stderr(StringIO()), self.assertRaises(SystemExit):
-            get_pr_diff("85", run)
-        self.assertEqual(len(calls), 1)
+        with self.assertRaises(SystemExit):
+            self._get((1, "", "HTTP 404: Not Found"))
 
     def test_failed_local_build_exits(self):
-        run, _ = self._run(
-            (1, "", TOO_LARGE),
-            (0, f'{{"baseRefName": "main", "headRefOid": "{PR_HEAD}"}}', ""),
-            (128, "", "fatal: 'origin' does not appear to be a git repository"),
-        )
-        with redirect_stderr(StringIO()), self.assertRaises(SystemExit):
-            get_pr_diff("85", run)
+        with self.assertRaises(SystemExit):
+            self._get(
+                (1, "", TOO_LARGE),
+                (0, f'{{"baseRefName": "main", "headRefOid": "{PR_HEAD}"}}', ""),
+                (128, "", "fatal: 'origin' does not appear to be a git repository"),
+            )
 
 
 class IgnorePathTests(unittest.TestCase):
