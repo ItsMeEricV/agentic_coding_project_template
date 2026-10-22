@@ -22,11 +22,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from agent_code_reviewer import (  # noqa: E402
     DEFAULT_CONTEXT_WINDOW,
-    REPLY_RESERVE_TOKENS,
+    DEFAULT_MAX_OUTPUT_TOKENS,
     DEFAULT_IGNORE_PATHS,
     MAX_SLICE_RUNS,
     SLICE_GATE_TOKENS,
     ConfigError,
+    IncompleteReplyError,
+    ModelEntry,
+    OpenRouterAdapter,
     FocusArea,
     FocusRecord,
     _build_line_content_index,
@@ -44,6 +47,8 @@ from agent_code_reviewer import (  # noqa: E402
     filter_diff,
     focus_file_path,
     prune_focus_paths,
+    require_complete,
+    review_pr,
     slice_gate_reason,
     write_focus_file,
     VersionReport,
@@ -358,17 +363,39 @@ class ContextWindowTests(unittest.TestCase):
         self.assertEqual(toml.count("context_window"), len(roster.entries) + 1)  # + header doc
 
 
+def _entry(**fields: object) -> ModelEntry:
+    model = {"key": "a", "name": "A", "access_method": "openrouter", "id": "v/m", **fields}
+    return parse_config(_raw([model])).entries[0]
+
+
+class OutputBudgetTests(unittest.TestCase):
+    def test_defaults_when_omitted(self):
+        self.assertEqual(_entry().max_output_tokens, DEFAULT_MAX_OUTPUT_TOKENS)
+
+    def test_explicit_value_wins(self):
+        entry = _entry(context_window=1_050_000, max_output_tokens=128_000)
+        self.assertEqual(entry.max_output_tokens, 128_000)
+
+    def test_rejects_non_positive_non_int_or_not_below_the_window(self):
+        for bad in (0, -1, "128K", True, 200_000):
+            with self.subTest(bad=bad), self.assertRaises(ConfigError):
+                _entry(context_window=200_000, max_output_tokens=bad)
+
+
 class DiffBudgetTests(unittest.TestCase):
-    def test_budget_is_window_minus_reply_reserve_in_chars_minus_overhead(self):
-        budget = diff_char_budget(context_window=100_000, overhead_chars=1_000)
-        self.assertEqual(budget, (100_000 - REPLY_RESERVE_TOKENS) * 4 - 1_000)
+    def test_budget_is_window_minus_output_budget_in_chars_minus_overhead(self):
+        budget = diff_char_budget(_entry(context_window=100_000), overhead_chars=1_000)
+        self.assertEqual(budget, (100_000 - DEFAULT_MAX_OUTPUT_TOKENS) * 4 - 1_000)
+        wide = _entry(context_window=1_050_000, max_output_tokens=128_000)
+        self.assertEqual(diff_char_budget(wide, overhead_chars=0), 922_000 * 4)
 
     def test_budget_never_negative(self):
-        self.assertEqual(diff_char_budget(context_window=1_000, overhead_chars=10), 0)
+        tight = _entry(context_window=1_000, max_output_tokens=999)
+        self.assertEqual(diff_char_budget(tight, overhead_chars=10), 0)
 
     def test_old_hardcoded_cap_is_far_below_a_million_token_window(self):
         """Regression guard for the 100 KB cap that forced layer-wise slicing."""
-        self.assertGreater(diff_char_budget(1_050_000, 0), 759_000 * 4)
+        self.assertGreater(diff_char_budget(_entry(context_window=1_050_000), 0), 759_000 * 4)
 
     def test_entries_that_fit_lists_only_wide_enough_windows_in_roster_order(self):
         def entry(key, window):
@@ -466,6 +493,115 @@ class PrDiffTests(unittest.TestCase):
                 (0, f'{{"baseRefName": "main", "headRefOid": "{PR_HEAD}"}}', ""),
                 (128, "", "fatal: 'origin' does not appear to be a git repository"),
             )
+
+
+def _openrouter_payload(content: str | None, finish: str) -> dict[str, object]:
+    return {
+        "id": "gen-1761100000-abc",
+        "choices": [{"finish_reason": finish, "message": {"role": "assistant", "content": content}}],
+        "usage": {
+            "prompt_tokens": 389454,
+            "completion_tokens": 128000,
+            "completion_tokens_details": {"reasoning_tokens": 128000},
+        },
+    }
+
+
+class ModelReplyTests(unittest.TestCase):
+    def setUp(self):
+        self.openrouter = make_adapter(_entry(context_window=1_050_000, max_output_tokens=128_000))
+
+    def test_every_request_carries_the_output_budget(self):
+        self.assertEqual(self.openrouter.build_request("sys", [])["max_tokens"], 128_000)
+        gemini = make_adapter(_entry(access_method="gemini_api", max_output_tokens=9_000))
+        body = gemini.build_request("sys", [])
+        self.assertEqual(body["generationConfig"]["maxOutputTokens"], 9_000)
+        openai = make_adapter(_entry(access_method="openai_api", max_output_tokens=9_000))
+        self.assertEqual(openai.build_request("sys", [])["max_output_tokens"], 9_000)
+
+    def test_normal_stop_passes_with_usage_and_generation_id(self):
+        reply = require_complete(
+            self.openrouter.extract_response(_openrouter_payload('{"summary": "ok"}', "stop"))
+        )
+        self.assertEqual(reply.generation_id, "gen-1761100000-abc")
+        self.assertEqual((reply.prompt_tokens, reply.reasoning_tokens), (389_454, 128_000))
+
+    def test_empty_content_is_refused_with_stop_reason_usage_and_generation_id(self):
+        reply = self.openrouter.extract_response(_openrouter_payload(None, "stop"))
+        with self.assertRaises(IncompleteReplyError) as caught:
+            require_complete(reply)
+        message = str(caught.exception)
+        self.assertIn("empty", message)
+        self.assertIn("stop reason stop", message)
+        self.assertIn("389,454 prompt + 128,000 completion (128,000 reasoning)", message)
+        self.assertIn("gen-1761100000-abc", message)
+
+    def test_length_stop_is_refused_even_with_text(self):
+        reply = self.openrouter.extract_response(_openrouter_payload('{"summary": "trunc', "length"))
+        with self.assertRaisesRegex(IncompleteReplyError, "cut off: stop reason length"):
+            require_complete(reply)
+
+    def test_gemini_max_tokens_is_cut_off_and_counts_thoughts_as_completion(self):
+        gemini = make_adapter(_entry(access_method="gemini_api"))
+        reply = gemini.extract_response(
+            {
+                "candidates": [{"finishReason": "MAX_TOKENS", "content": {"parts": [{"text": "{"}]}}],
+                "usageMetadata": {
+                    "promptTokenCount": 10,
+                    "candidatesTokenCount": 5,
+                    "thoughtsTokenCount": 7,
+                },
+            }
+        )
+        self.assertFalse(reply.complete)
+        self.assertEqual((reply.completion_tokens, reply.reasoning_tokens), (12, 7))
+
+    def test_openai_incomplete_reports_its_reason(self):
+        openai = make_adapter(_entry(access_method="openai_api"))
+        reply = openai.extract_response(
+            {
+                "id": "resp_1",
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+                "output_text": "{",
+                "usage": {"input_tokens": 10, "output_tokens": 32000},
+            }
+        )
+        self.assertEqual((reply.stop_reason, reply.complete), ("max_output_tokens", False))
+        self.assertEqual(reply.signature, "resp_1")
+
+
+class _CannedOpenRouter(OpenRouterAdapter):
+    """Answers at the network boundary: call_api returns a canned response."""
+
+    def __init__(self, entry: ModelEntry, canned: dict[str, object]) -> None:
+        super().__init__(entry)
+        self.canned = canned
+
+    def call_api(self, request_body):
+        return self.canned
+
+
+class ReviewPrRefusalTests(unittest.TestCase):
+    def _review(self, payload: dict[str, object]) -> list[list[str]]:
+        roster = parse_config(_raw([{"key": "a", "name": "A", "access_method": "openrouter", "id": "v/m"}]))
+        adapter = _CannedOpenRouter(roster.entries[0], payload)
+        patch, calls = fake_subprocess(
+            (0, SAMPLE_DIFF, ""),
+            (0, f'{{"title": "t", "body": "b", "headRefOid": "{PR_HEAD}"}}', ""),
+            (0, "owner/repo\n", ""),
+        )
+        with patch, redirect_stderr(StringIO()), self.assertRaises(IncompleteReplyError):
+            review_pr("85", adapter, roster)
+        return calls
+
+    def test_empty_reply_posts_nothing(self):
+        calls = self._review(_openrouter_payload("", "stop"))
+        self.assertFalse([c for c in calls if c[:2] == ["gh", "api"]])
+
+    def test_length_cut_reply_posts_nothing(self):
+        calls = self._review(_openrouter_payload('{"summary": "trunc', "length"))
+        self.assertFalse([c for c in calls if c[:2] == ["gh", "api"]])
 
 
 class IgnorePathTests(unittest.TestCase):
@@ -1270,6 +1406,13 @@ class CatalogParseTests(unittest.TestCase):
         models = parse_openrouter_catalog({"data": [{"id": "x/y", "name": "X"}]})
         self.assertEqual(models[0].prompt_price, 0.0)
         self.assertEqual(models[0].context_length, 0)
+        self.assertEqual(models[0].max_output, 0)
+
+    def test_max_output_is_the_top_providers_completion_cap(self):
+        raw = {"id": "x/y", "top_provider": {"max_completion_tokens": 128000}}
+        model = parse_openrouter_catalog({"data": [raw]})[0]
+        self.assertEqual(model.max_output, 128_000)
+        self.assertIn("128K", format_catalog([model]))
 
     def test_entries_without_an_id_are_skipped(self):
         self.assertEqual(parse_openrouter_catalog({"data": [{"name": "nameless"}]}), [])
