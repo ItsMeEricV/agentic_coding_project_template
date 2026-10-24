@@ -505,15 +505,18 @@ class PrDiffTests(unittest.TestCase):
             )
 
 
-def _openrouter_payload(content: str | None, finish: str) -> dict[str, object]:
+def _openrouter_payload(content: str | None, finish: str, cost: float | None = None) -> dict[str, object]:
+    usage: dict[str, object] = {
+        "prompt_tokens": 389454,
+        "completion_tokens": 128000,
+        "completion_tokens_details": {"reasoning_tokens": 128000},
+    }
+    if cost is not None:
+        usage["cost"] = cost
     return {
         "id": "gen-1761100000-abc",
         "choices": [{"finish_reason": finish, "message": {"role": "assistant", "content": content}}],
-        "usage": {
-            "prompt_tokens": 389454,
-            "completion_tokens": 128000,
-            "completion_tokens_details": {"reasoning_tokens": 128000},
-        },
+        "usage": usage,
     }
 
 
@@ -540,6 +543,13 @@ class ModelReplyTests(unittest.TestCase):
         )
         self.assertEqual(reply.generation_id, "gen-1761100000-abc")
         self.assertEqual((reply.prompt_tokens, reply.reasoning_tokens), (389_454, 128_000))
+
+    def test_openrouter_cost_is_read_and_reported(self):
+        reply = self.openrouter.extract_response(_openrouter_payload("{}", "stop", cost=1.45))
+        self.assertEqual(reply.cost, 1.45)
+        self.assertEqual(reply.usage(), "389,454 prompt + 128,000 completion (128,000 reasoning); cost $1.4500")
+        self.assertIn("cost $1.4500", reply.describe())
+        self.assertIsNone(self.openrouter.extract_response(_openrouter_payload("{}", "stop")).cost)
 
     def test_empty_content_is_refused_with_stop_reason_usage_and_generation_id(self):
         reply = self.openrouter.extract_response(_openrouter_payload(None, "stop"))
@@ -633,7 +643,7 @@ class ReviewPrExclusionTests(unittest.TestCase):
 
     def test_dry_run_names_what_was_left_out_to_the_model_and_on_stdout(self):
         roster = parse_config(_raw([{"key": "a", "name": "A", "access_method": "openrouter", "id": "v/m"}]))
-        adapter = _RecordingOpenRouter(roster.entries[0], _openrouter_payload('{"summary": "ok"}', "stop"))
+        adapter = _RecordingOpenRouter(roster.entries[0], _openrouter_payload('{"summary": "ok"}', "stop", cost=1.45))
         diff = _block("src/a.ts") + _block("pnpm-lock.yaml") + _block("docs/x.md")
         patch, _ = fake_subprocess(
             (0, diff, ""),
@@ -650,6 +660,10 @@ class ReviewPrExclusionTests(unittest.TestCase):
         printed = json.loads(out.getvalue())
         self.assertEqual(printed["excluded"], {"lockfiles": ["pnpm-lock.yaml"], "docs": ["docs/x.md"]})
         self.assertIn("lockfiles: 1, docs: 1", printed["summary"])
+        self.assertEqual(
+            printed["usage"],
+            {"prompt_tokens": 389_454, "completion_tokens": 128_000, "reasoning_tokens": 128_000, "cost": 1.45},
+        )
 
 
 class ExclusionReportTests(unittest.TestCase):

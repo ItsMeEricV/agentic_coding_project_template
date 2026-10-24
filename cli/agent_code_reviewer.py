@@ -49,6 +49,13 @@ PR Review Mode (--pr):
   attaches design docs or sibling-layer code as read-only context so the
   reviewer judges the diff against the real contract, not a guess at it.
 
+  The reviewer never sees lockfiles, docs, or generated output (--ignore-path
+  --help lists them); on a diff still over 150K tokens, tests and then
+  migrations are trimmed too (--trim-above). --keep-path overrides both. The
+  prompt names what was left out. stdout carries `usage: <tokens>; cost $<usd>`
+  (cost where OpenRouter reports it) and `excluded: <category>: <count>, ...`,
+  or, with --dry-run, both as `usage` and `excluded` keys in the JSON.
+
   Besides its comments the reviewer may nominate up to three focus areas: an
   invariant it could not settle from the diff alone, and the files that
   enforce it. They go in the review body and, with per-file churn, into
@@ -973,15 +980,19 @@ class ModelReply:
     completion_tokens: int | None = None
     reasoning_tokens: int | None = None
     generation_id: str = ""  # OpenRouter's id for the call
+    cost: float | None = None  # USD, where the API reports it (OpenRouter's usage.cost)
 
-    def describe(self) -> str:
+    def usage(self) -> str:
         def count(n: int | None) -> str:
             return "?" if n is None else f"{n:,}"
 
         usage = f"{count(self.prompt_tokens)} prompt + {count(self.completion_tokens)} completion"
         if self.reasoning_tokens is not None:
             usage += f" ({count(self.reasoning_tokens)} reasoning)"
-        line = f"stop reason {self.stop_reason or '(none given)'}; tokens {usage}"
+        return usage + (f"; cost ${self.cost:.4f}" if self.cost is not None else "")
+
+    def describe(self) -> str:
+        line = f"stop reason {self.stop_reason or '(none given)'}; tokens {self.usage()}"
         return line + (f"; generation {self.generation_id}" if self.generation_id else "")
 
 
@@ -1384,6 +1395,7 @@ class OpenRouterAdapter(Adapter):
             completion_tokens=usage.get("completion_tokens"),
             reasoning_tokens=(usage.get("completion_tokens_details") or {}).get("reasoning_tokens"),
             generation_id=data.get("id", ""),
+            cost=usage.get("cost"),
         )
 
 
@@ -2289,6 +2301,8 @@ def review_pr(
     response_data = adapter.call(request_body)
     reply = require_complete(adapter.extract_response(response_data))
     print(f"--> {entry.key}: {reply.describe()}", file=sys.stderr)
+    if not dry_run:
+        print(f"usage: {reply.usage()}")
     text = reply.text
 
     # Parse JSON response
@@ -2337,7 +2351,18 @@ def review_pr(
     if dry_run:
         print(
             json.dumps(
-                {"summary": summary, "comments": comments, "excluded": plan.excluded}, indent=2
+                {
+                    "summary": summary,
+                    "comments": comments,
+                    "excluded": plan.excluded,
+                    "usage": {
+                        "prompt_tokens": reply.prompt_tokens,
+                        "completion_tokens": reply.completion_tokens,
+                        "reasoning_tokens": reply.reasoning_tokens,
+                        "cost": reply.cost,
+                    },
+                },
+                indent=2,
             )
         )
         print("--> Dry run: nothing posted", file=sys.stderr)
@@ -2704,6 +2729,7 @@ def main() -> None:
     except IncompleteReplyError as exc:
         print(f"Error: {exc}. Nothing saved to history.", file=sys.stderr)
         sys.exit(5)
+    print(f"--> {entry.key}: tokens {reply.usage()}", file=sys.stderr)
     text = reply.text
 
     # Save to history
