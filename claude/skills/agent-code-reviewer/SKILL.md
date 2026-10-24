@@ -20,6 +20,7 @@ No, when:
 
 - Chores, lint, dependency bumps with no behavior change, one-line fixes with obvious correctness. Token cost is real; a trivial diff does not earn a review.
 - You have no sharp question. A reviewer without one returns generic noise.
+- A PR under ~500 lines of changed source (not counting tests, migrations, lockfiles, docs): pr-review-toolkit covers it; the user ruled a second-opinion pass is not worth the cost there.
 - The user wants another model to **write, fix, or refactor** code. That is delegation, not review — hand off to the harness's delegation skill for that model (e.g. `codex:rescue`) or say none is installed.
 
 ## Picking a model
@@ -40,7 +41,7 @@ uv run cli/agent_code_reviewer.py --pr 67 --file docs/rfcs/0009-session-workflow
 uv run cli/agent_code_reviewer.py --file src/lock.ts "Is the CAS loop safe under contention?"
 ```
 
-- **`--pr` sends the whole diff in one pass, always.** It is the only pass that judges cross-layer contracts correctly.
+- **`--pr` sends the whole diff in one pass, always**, minus lockfiles, docs, and generated output, and on a diff over 150K tokens some tests and migrations. It is the only pass that judges cross-layer contracts correctly. stdout ends with `excluded:` and `usage:` lines (keys in the `--dry-run` JSON): relay both, so the user knows what the reviewer did not see and what the review cost. Markdown a program reads that the defaults miss goes in with `--keep-path`. Pass `--trim-above 0` when the tests are the point of the review.
 - **Give rationale, not rules.** Attach the RFC, decision log, or the sibling layer's interface with `--file` (repeatable, read-only context). A paragraph of "binding rules" turns the reviewer into a linter that tags every deliberate deviation HIGH.
 - **`--dry-run` the first time a roster entry reviews a PR**, so a malformed reply does not land on the PR as a raw-text summary. An empty or cut-off reply never lands: exit 5 prints its stop reason, token usage, and generation id. Relay them to the user; a `length` stop means the model ran out of output budget (the entry's `max_output_tokens`, or the provider's default when unset), and changing it is a roster edit.
 - **A `--> Catalog check` report on stderr is news for the user, not a failure.** The review still ran. Put the report verbatim at the top of what you return, so it survives every agent that relays it; the user decides, per `references/roster-maintenance.md`. Never edit the roster or pass `--skip-version-check` on your own.
