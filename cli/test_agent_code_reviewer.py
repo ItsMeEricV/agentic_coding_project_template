@@ -5,13 +5,14 @@ Run with: python3 -m unittest cli.test_agent_code_reviewer -v
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import sys
 import tempfile
 import unittest
 import urllib.error
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import date, datetime
 from email.message import Message
 from io import StringIO
@@ -52,6 +53,7 @@ from agent_code_reviewer import (  # noqa: E402
     write_focus_file,
     VersionReport,
     format_catalog,
+    format_exclusions,
     format_focus_section,
     format_new_families,
     format_version_report,
@@ -615,6 +617,58 @@ class ReviewPrRefusalTests(unittest.TestCase):
     def test_length_cut_reply_posts_nothing(self):
         calls = self._review(_openrouter_payload('{"summary": "trunc', "length"))
         self.assertFalse([c for c in calls if c[:2] == ["gh", "api"]])
+
+
+class _RecordingOpenRouter(_CannedOpenRouter):
+    def call_api(self, request_body):
+        self.sent = request_body
+        return self.canned
+
+
+class ReviewPrExclusionTests(unittest.TestCase):
+    PR = "990085"
+
+    def tearDown(self):
+        focus_file_path(self.PR, "owner_repo").unlink(missing_ok=True)
+
+    def test_dry_run_names_what_was_left_out_to_the_model_and_on_stdout(self):
+        roster = parse_config(_raw([{"key": "a", "name": "A", "access_method": "openrouter", "id": "v/m"}]))
+        adapter = _RecordingOpenRouter(roster.entries[0], _openrouter_payload('{"summary": "ok"}', "stop"))
+        diff = _block("src/a.ts") + _block("pnpm-lock.yaml") + _block("docs/x.md")
+        patch, _ = fake_subprocess(
+            (0, diff, ""),
+            (0, f'{{"title": "t", "body": "b", "headRefOid": "{PR_HEAD}"}}', ""),
+            (0, "owner/repo\n", ""),
+        )
+        out = StringIO()
+        with patch, redirect_stderr(StringIO()), redirect_stdout(out):
+            review_pr(self.PR, adapter, roster, dry_run=True)
+        prompt = adapter.sent["messages"][-1]["content"]
+        self.assertIn("<excluded_files>", prompt)
+        self.assertIn("pnpm-lock.yaml", prompt)
+        self.assertNotIn("diff --git a/pnpm-lock.yaml", prompt)
+        printed = json.loads(out.getvalue())
+        self.assertEqual(printed["excluded"], {"lockfiles": ["pnpm-lock.yaml"], "docs": ["docs/x.md"]})
+        self.assertIn("lockfiles: 1, docs: 1", printed["summary"])
+
+
+class ExclusionReportTests(unittest.TestCase):
+    def test_counts_per_category_in_report_order(self):
+        self.assertEqual(format_exclusions({"docs": ["a.md", "b.md"], "tests": ["a.test.ts"]}), "docs: 2, tests: 1")
+        self.assertEqual(format_exclusions({}), "")
+
+    def test_prompt_block_lists_paths_before_the_diff_and_caps_each_category(self):
+        tests = [f"t{i}.test.ts" for i in range(45)]
+        prompt = build_pr_prompt("DIFF", "", "", [], {"lockfiles": ["yarn.lock"], "tests": tests})
+        block = prompt[prompt.index("<excluded_files>") : prompt.index("</excluded_files>")]
+        self.assertLess(prompt.index("</excluded_files>"), prompt.index("Review this PR diff:"))
+        self.assertIn("lockfiles (1): yarn.lock", block)
+        self.assertIn("tests (45): t0.test.ts", block)
+        self.assertIn("t39.test.ts, and 5 more", block)
+        self.assertNotIn("t40.test.ts", block)
+
+    def test_no_exclusions_means_no_block(self):
+        self.assertNotIn("<excluded_files>", build_pr_prompt("DIFF", "", "", [], {}))
 
 
 class IgnorePathTests(unittest.TestCase):

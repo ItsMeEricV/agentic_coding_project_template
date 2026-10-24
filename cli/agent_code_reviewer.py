@@ -186,6 +186,10 @@ PR_REVIEW_SYSTEM_PROMPT: str = (
     "carries a `cat -n` style line-number prefix that is not part of the file. Read them "
     "to learn the contracts and deliberate rulings the diff is written against, and judge the "
     "diff by them. They are not under review: never emit a comment whose path is one of them.\n\n"
+    "An <excluded_files>...</excluded_files> block may list, by category, files the PR changes "
+    "that were left out of the diff: docs, lockfiles, generated output, paths the author "
+    "filtered, and on a large PR some tests or migrations. You have not seen them. Never "
+    "comment on them, and do not report a test or doc as missing when it is listed there.\n\n"
     "IMPORTANT: Respond with a JSON object containing:\n"
     '- "summary": A 2-3 sentence overall assessment, which may include at most 2 sentences '
     "of praise if genuinely warranted (praise is optional — omit it entirely when nothing "
@@ -2125,13 +2129,24 @@ def number_lines(text: str) -> str:
     return "\n".join(f"{i:>6}\t{line}" for i, line in enumerate(text.splitlines(), 1))
 
 
+def format_exclusions(excluded: dict[str, list[str]]) -> str:
+    """`docs: 2, tests: 1` — per-category counts for stdout and the review body."""
+    return ", ".join(f"{category}: {len(paths)}" for category, paths in excluded.items())
+
+
+# Paths listed per category in the prompt; the rest are counted.
+MAX_LISTED_EXCLUSIONS: int = 40
+
+
 def build_pr_prompt(
     annotated_diff: str,
     context_block: str,
     extra_instructions: str,
     context_files: list[tuple[str, str]],
+    excluded: dict[str, list[str]] | None = None,
 ) -> str:
-    """User turn for --pr: instructions, PR description, attached files, then the diff."""
+    """User turn for --pr: instructions, PR description, attached files, what
+    was left out, then the diff."""
     files_block = ""
     if context_files:
         files_block = (
@@ -2139,7 +2154,15 @@ def build_pr_prompt(
             + "".join(f'<file path="{path}">\n{number_lines(body)}\n</file>\n' for path, body in context_files)
             + "</context_files>\n\n"
         )
-    prompt = f"{context_block}{files_block}Review this PR diff:\n\n```diff\n{annotated_diff}\n```"
+    excluded_block = ""
+    if excluded:
+        lines = []
+        for category, paths in excluded.items():
+            listed = ", ".join(paths[:MAX_LISTED_EXCLUSIONS])
+            rest = len(paths) - MAX_LISTED_EXCLUSIONS
+            lines.append(f"{category} ({len(paths)}): {listed}" + (f", and {rest} more" if rest > 0 else ""))
+        excluded_block = "<excluded_files>\n" + "\n".join(lines) + "\n</excluded_files>\n\n"
+    prompt = f"{context_block}{files_block}{excluded_block}Review this PR diff:\n\n```diff\n{annotated_diff}\n```"
     if extra_instructions:
         prompt = f"{extra_instructions}\n\n{prompt}"
     return prompt
@@ -2189,6 +2212,7 @@ def review_pr(
     if not diff.strip():
         count = sum(len(paths) for paths in plan.excluded.values())
         print(f"--> Nothing to review: all {count} changed file(s) excluded.", file=sys.stderr)
+        print(f"excluded: {format_exclusions(plan.excluded)}")
         return
 
     annotated_diff = annotate_diff_with_line_numbers(diff)
@@ -2222,7 +2246,9 @@ def review_pr(
         )
 
     # Everything in the prompt that is not the diff competes with it for the window.
-    overhead = len(build_pr_prompt("", context_block, extra_instructions, context_files or []))
+    overhead = len(
+        build_pr_prompt("", context_block, extra_instructions, context_files or [], plan.excluded)
+    )
     overhead += len(PR_REVIEW_SYSTEM_PROMPT)
     entry = adapter.entry
     budget = diff_char_budget(entry, overhead)
@@ -2252,7 +2278,9 @@ def review_pr(
         file=sys.stderr,
     )
 
-    prompt = build_pr_prompt(annotated_diff, context_block, extra_instructions, context_files or [])
+    prompt = build_pr_prompt(
+        annotated_diff, context_block, extra_instructions, context_files or [], plan.excluded
+    )
 
     # Single-turn review — no persisted history.
     history: list[JsonDict] = []
@@ -2303,9 +2331,15 @@ def review_pr(
     for area in areas:
         print(f"    - {area.title}: {', '.join(area.paths)}", file=sys.stderr)
     summary += format_focus_section(areas)
+    if plan.excluded:
+        summary += f"\n\n_Not sent to the reviewer: {format_exclusions(plan.excluded)}._"
 
     if dry_run:
-        print(json.dumps({"summary": summary, "comments": comments}, indent=2))
+        print(
+            json.dumps(
+                {"summary": summary, "comments": comments, "excluded": plan.excluded}, indent=2
+            )
+        )
         print("--> Dry run: nothing posted", file=sys.stderr)
         return
 
@@ -2319,6 +2353,8 @@ def review_pr(
         diff=diff,
     )
     print(f"--> Review posted to PR #{pr_number}", file=sys.stderr)
+    if plan.excluded:
+        print(f"excluded: {format_exclusions(plan.excluded)}")
 
 
 # ---------------------------------------------------------------------------
