@@ -20,7 +20,7 @@ No, when:
 
 - Chores, lint, dependency bumps with no behavior change, one-line fixes with obvious correctness. Token cost is real; a trivial diff does not earn a review.
 - You have no sharp question. A reviewer without one returns generic noise.
-- A PR under ~500 lines of changed source (not counting tests, migrations, lockfiles, docs): pr-review-toolkit covers it; the user ruled a second-opinion pass is not worth the cost there.
+- A PR under ~500 lines of changed source (not counting tests, migrations, lockfiles, docs), unless it touches auth, money, migrations, public APIs, or a new subsystem: pr-review-toolkit covers it.
 - The user wants another model to **write, fix, or refactor** code. That is delegation, not review — hand off to the harness's delegation skill for that model (e.g. `codex:rescue`) or say none is installed.
 
 ## Picking a model
