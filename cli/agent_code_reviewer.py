@@ -216,25 +216,50 @@ PR_REVIEW_SYSTEM_PROMPT: str = (
     "Return ONLY valid JSON, no markdown fences."
 )
 
-# Diff hunks for these paths are dropped from PR review input. Prose (docs,
-# docs/superpowers plans, .trail learnings) and license text are not code, and
-# lockfiles and snapshots are generated: none is code-relevant for review, and a
-# lockfile alone can be 10K+ tokens that crowd out the real diff.
-DEFAULT_IGNORE_PATHS: list[str] = [
-    "*.md",
-    ".trail/",
-    "docs/superpowers/",
-    "*LICENSE*",
-    "package-lock.json",
-    "pnpm-lock.yaml",
-    "yarn.lock",
-    "bun.lockb",
-    "uv.lock",
-    "poetry.lock",
-    "Cargo.lock",
-    "go.sum",
-    "*.snap",
-]
+# PR files the reviewer never sees, by category. Prose and license text are not
+# code; lockfiles and generated output are machine-written, and one lockfile
+# alone can be 10K+ tokens that crowd out the real diff. `--keep-path` overrides.
+NEVER_SEND: dict[str, list[str]] = {
+    "lockfiles": [
+        f"**/{name}"
+        for name in (
+            "package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "yarn.lock",
+            "bun.lock", "bun.lockb", "uv.lock", "poetry.lock", "Pipfile.lock", "Cargo.lock",
+            "go.sum", "Gemfile.lock", "composer.lock", "flake.lock", "mix.lock",
+            "pubspec.lock", "Package.resolved", "packages.lock.json",
+        )
+    ],
+    "docs": ["*.md", "*.mdx", "*.rst", "*.adoc", "docs/", ".trail/", "*LICENSE*", "*LICENCE*"],
+    "generated": [
+        "*.generated.*", "**/dist/", "**/vendor/", "*.min.js", "*.min.css", "*.js.map",
+        "*.css.map", "*.snap",
+    ],
+}
+
+# Markdown a program reads (prompt templates, rendered-file snapshots) is code
+# input, not prose: it is exempt from the "docs" category.
+CODE_INPUT_MARKDOWN: list[str] = ["**/prompts/", "*.prompt.md", "**/__snapshots__/"]
+
+# A first-hunk header line carrying one of these marks a file as generated: the
+# `@generated` convention and Go's "Code generated ... DO NOT EDIT.".
+GENERATED_MARKER: re.Pattern[str] = re.compile(r"@generated\b|\bDO NOT EDIT\b")
+
+# Kept unless the PR is large (see DEFAULT_TRIM_ABOVE_TOKENS): tests carry the
+# author's intent, and migrations are code that can be wrong. Tests go first.
+TRIM_WHEN_LARGE: dict[str, list[str]] = {
+    "tests": [
+        "*.test.*", "*.spec.*", "*_test.*", "**/test_*.py", "*.fixture.*", "**/__tests__/",
+        "**/__mocks__/", "**/__snapshots__/", "**/test/", "**/tests/", "**/test-support/",
+        "**/testdata/", "**/fixtures/",
+    ],
+    "migrations": ["**/migrations/", "**/migrate/", "**/alembic/versions/"],
+}
+
+# Stems too common to tie a test to a changed source file by name.
+GENERIC_STEMS: frozenset[str] = frozenset(
+    {"index", "main", "mod", "lib", "__init__", "constants", "types", "utils", "helpers",
+     "config", "package", "schema"}
+)
 
 
 # ---------------------------------------------------------------------------
@@ -317,6 +342,12 @@ MAX_FOCUS_AREAS: int = 3
 # line was the problem, and never more than MAX_SLICE_RUNS per whole pass.
 SLICE_GATE_TOKENS: int = 150_000
 MAX_SLICE_RUNS: int = 3
+
+# Tests, then migrations, are trimmed only while the rest of the diff is over
+# this. It is the size at which the slice gate already calls attention per line
+# the problem, and about $0.75 of input at $5/M; reviews of real sessions run
+# 40K-100K tokens, so a typical PR still goes whole, tests included.
+DEFAULT_TRIM_ABOVE_TOKENS: int = SLICE_GATE_TOKENS
 
 
 class ChurnEntry(TypedDict):
@@ -1406,7 +1437,7 @@ def get_pr_diff(pr_number: str) -> str:
         "fetching PR refs from origin",
     )
     # Three-dot: from the merge base, as GitHub diffs a PR. Prefix flags pin
-    # the a/ b/ headers filter_diff parses, whatever the local diff config.
+    # the a/ b/ headers plan_pr_input parses, whatever the local diff config.
     diff = _run_or_exit(
         ["git", "diff", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/",
          f"origin/{base}...{head}"],
@@ -1422,12 +1453,16 @@ def get_pr_diff(pr_number: str) -> str:
 def _path_matches_any(path: str, patterns: list[str]) -> bool:
     """True if `path` matches any of `patterns`. A pattern equal to the path
     matches literally first, so route files like `[...slug]/route.ts` need no
-    escaping; trailing-slash patterns are directory prefixes; the rest are
-    fnmatch globs."""
+    escaping; a `**/` prefix matches the rest at any depth; trailing-slash
+    patterns are directory prefixes; the rest are fnmatch globs."""
     for pat in patterns:
-        if pat == path:
+        if pat.startswith("**/"):
+            tails = [path] + [path[i + 1 :] for i, c in enumerate(path) if c == "/"]
+            if any(_path_matches_any(tail, [pat[3:]]) for tail in tails):
+                return True
+        elif pat == path:
             return True
-        if pat.endswith("/"):
+        elif pat.endswith("/"):
             if path.startswith(pat):
                 return True
         elif fnmatch.fnmatch(path, pat):
@@ -1435,43 +1470,132 @@ def _path_matches_any(path: str, patterns: list[str]) -> bool:
     return False
 
 
-def filter_diff(
-    diff: str, ignore_paths: list[str], only_paths: list[str] | None = None
-) -> tuple[str, list[str]]:
-    """Drop unified-diff blocks whose file paths match any ignore pattern, or,
-    when `only_paths` is given, that match none of its patterns. Patterns use
-    the same syntax in both lists.
+@dataclass(frozen=True)
+class DiffFile:
+    """One file's block of a unified diff, with its annotated size."""
 
-    Returns the filtered diff plus the list of paths that were dropped (for
-    logging — so users can see what got skipped).
-    """
-    only_paths = only_paths or []
-    if not (ignore_paths or only_paths) or not diff:
-        return diff, []
-    # Split on file boundaries while keeping each `diff --git` header attached
-    # to its own block. The first split element is anything before the first
-    # block (usually empty); the rest are full file blocks.
-    blocks = re.split(r"^(?=diff --git )", diff, flags=re.MULTILINE)
-    kept: list[str] = []
-    dropped: list[str] = []
-    for block in blocks:
-        if not block.strip():
-            kept.append(block)
+    path_a: str
+    path: str
+    block: str
+    tokens: int
+
+    def matches(self, patterns: list[str]) -> bool:
+        return _path_matches_any(self.path_a, patterns) or _path_matches_any(self.path, patterns)
+
+
+@dataclass(frozen=True)
+class InputPlan:
+    """What a --pr run sends. `excluded` maps a category to the paths it left
+    out, in the order the report lists them."""
+
+    diff: str
+    excluded: dict[str, list[str]]
+    tokens_before: int
+    tokens_sent: int
+
+
+def _estimate_tokens(diff: str) -> int:
+    return int(len(annotate_diff_with_line_numbers(diff)) / CHARS_PER_TOKEN)
+
+
+def _has_generated_marker(block: str) -> bool:
+    """A GENERATED_MARKER in the first five new-file lines, seen only when the first hunk starts there."""
+    lines = block.splitlines()
+    first_hunk = next((i for i, line in enumerate(lines) if line.startswith("@@")), None)
+    if first_hunk is None or not re.match(r"@@ -\S+ \+1(,\d+)? @@", lines[first_hunk]):
+        return False
+    head = [line for line in lines[first_hunk + 1 :] if not line.startswith("-")][:5]
+    return any(GENERATED_MARKER.search(line) for line in head)
+
+
+def _never_send_category(file: DiffFile) -> str | None:
+    for category, patterns in NEVER_SEND.items():
+        if category == "docs" and file.matches(CODE_INPUT_MARKDOWN):
             continue
+        if file.matches(patterns):
+            return category
+    if _has_generated_marker(file.block):
+        return "generated"
+    return None
+
+
+def _stem(path: str) -> str:
+    return Path(path).name.split(".", 1)[0]
+
+
+def plan_pr_input(
+    diff: str,
+    ignore_paths: list[str] | None = None,
+    only_paths: list[str] | None = None,
+    keep_paths: list[str] | None = None,
+    trim_above: int = DEFAULT_TRIM_ABOVE_TOKENS,
+) -> InputPlan:
+    """Choose which file blocks of a PR diff the reviewer sees. NEVER_SEND
+    categories and the caller's path filters always drop; TRIM_WHEN_LARGE ones
+    drop only while the rest is over `trim_above` tokens (0 never trims).
+    `keep_paths` exempts a file from all of it. Pure."""
+    keep_paths = keep_paths or []
+    # The first split element is anything before the first block (usually empty).
+    preamble, *blocks = re.split(r"^(?=diff --git )", diff, flags=re.MULTILINE)
+    kept: list[DiffFile | str] = [preamble]
+    excluded: dict[str, list[str]] = {}
+    trimmable: dict[str, list[DiffFile]] = {category: [] for category in TRIM_WHEN_LARGE}
+    for block in blocks:
         match = re.match(r"diff --git a/(\S+) b/(\S+)", block)
         if not match:
             kept.append(block)  # malformed — keep so we don't silently drop content
             continue
-        path_a, path_b = match.group(1), match.group(2)
-        ignored = _path_matches_any(path_a, ignore_paths) or _path_matches_any(path_b, ignore_paths)
-        selected = not only_paths or (
-            _path_matches_any(path_a, only_paths) or _path_matches_any(path_b, only_paths)
-        )
-        if ignored or not selected:
-            dropped.append(path_b)
-            continue
-        kept.append(block)
-    return "".join(kept), dropped
+        file = DiffFile(match.group(1), match.group(2), block, _estimate_tokens(block))
+        if not file.matches(keep_paths):
+            category = (
+                _never_send_category(file)
+                or ("--ignore-path" if file.matches(ignore_paths or []) else None)
+                or ("--only-path" if only_paths and not file.matches(only_paths) else None)
+            )
+            if category:
+                excluded.setdefault(category, []).append(file.path)
+                continue
+            trim = next((c for c, pats in TRIM_WHEN_LARGE.items() if file.matches(pats)), None)
+            if trim:
+                trimmable[trim].append(file)
+        kept.append(file)
+
+    tokens = sum(f.tokens if isinstance(f, DiffFile) else _estimate_tokens(f) for f in kept)
+    dropped: set[str] = set()
+    if trim_above and tokens > trim_above:
+        trimmable_paths = {f.path for files in trimmable.values() for f in files}
+        source_stems = {
+            stem
+            for f in kept
+            if isinstance(f, DiffFile) and f.path not in trimmable_paths
+            for stem in [_stem(f.path)]
+            if len(stem) >= 4 and stem not in GENERIC_STEMS
+        }
+
+        def related(test: DiffFile) -> bool:
+            return _stem(test.path) in source_stems or any(s in test.block for s in source_stems)
+
+        tests = sorted(trimmable["tests"], key=lambda f: (related(f), -f.tokens))
+        # Migrations are the riskier code and usually small: they go only when
+        # dropping them gets the diff under the threshold.
+        migrations = sorted(trimmable["migrations"], key=lambda f: -f.tokens)
+        after_tests = tokens - sum(f.tokens for f in tests)
+        if after_tests > trim_above and after_tests - sum(f.tokens for f in migrations) > trim_above:
+            migrations = []
+        for category, files in (("tests", tests), ("migrations", migrations)):
+            for file in files:
+                if tokens <= trim_above:
+                    break
+                tokens -= file.tokens
+                dropped.add(file.path)
+                excluded.setdefault(category, []).append(file.path)
+
+    sent = "".join(
+        f.block if isinstance(f, DiffFile) else f
+        for f in kept
+        if not (isinstance(f, DiffFile) and f.path in dropped)
+    )
+    return InputPlan(sent, excluded, _estimate_tokens(diff), _estimate_tokens(sent))
 
 
 def get_repo_slug() -> str:
@@ -2031,8 +2155,10 @@ def review_pr(
     context_files: list[tuple[str, str]] | None = None,
     whole_pass: bool = True,
     dry_run: bool = False,
+    keep_paths: list[str] | None = None,
+    trim_above: int = DEFAULT_TRIM_ABOVE_TOKENS,
 ) -> None:
-    """Full PR review flow: fetch diff → filter paths → size check → review → post.
+    """Full PR review flow: fetch diff → plan input → size check → review → post.
 
     `whole_pass` is False when the caller restricted the diff (a vertical
     slice). A slice still prints any focus areas it nominates, but does not
@@ -2048,23 +2174,21 @@ def review_pr(
         print("PR diff is empty.", file=sys.stderr)
         return
 
-    diff, dropped = filter_diff(diff, ignore_paths or [], only_paths)
-    if dropped:
-        print(
-            f"--> Skipped {len(dropped)} file(s) per path patterns: "
-            + ", ".join(dropped[:5])
-            + ("..." if len(dropped) > 5 else ""),
-            file=sys.stderr,
-        )
+    plan = plan_pr_input(diff, ignore_paths, only_paths, keep_paths, trim_above)
+    diff = plan.diff
+    print(
+        f"--> Input: ~{plan.tokens_before:,} diff tokens in the PR, ~{plan.tokens_sent:,} sent",
+        file=sys.stderr,
+    )
+    for category, paths in plan.excluded.items():
+        print(f"    excluded {category} ({len(paths)}): {', '.join(paths)}", file=sys.stderr)
 
     # If every changed file was filtered out (docs-only PR, all snapshots, etc.),
     # exit cleanly. Sending an empty diff to the model would produce hallucinated
     # comments about content we explicitly meant to skip.
     if not diff.strip():
-        print(
-            f"--> Nothing to review: all {len(dropped)} changed file(s) excluded by path patterns.",
-            file=sys.stderr,
-        )
+        count = sum(len(paths) for paths in plan.excluded.values())
+        print(f"--> Nothing to review: all {count} changed file(s) excluded.", file=sys.stderr)
         return
 
     annotated_diff = annotate_diff_with_line_numbers(diff)
@@ -2292,10 +2416,40 @@ def main() -> None:
         default=[],
         metavar="PATTERN",
         help=(
-            "Skip files matching PATTERN when reviewing a PR. Trailing-slash "
-            "patterns match a directory prefix (e.g. 'docs/'); other patterns "
-            "use fnmatch globs (e.g. '*.snap'). Repeatable. Combined with the "
-            f"hardcoded defaults: {', '.join(DEFAULT_IGNORE_PATHS)}."
+            "Skip files matching PATTERN when reviewing a PR. A '**/' prefix matches "
+            "at any depth ('**/dist/'); trailing-slash patterns match a directory "
+            "prefix ('docs/'); other patterns use fnmatch globs ('*.snap'). "
+            "Repeatable. Added to the defaults, which never send lockfiles, docs "
+            "(prose markdown, docs/, .trail/, license text; markdown under "
+            f"{', '.join(CODE_INPUT_MARKDOWN)} is code input and is sent), or "
+            "generated output (*.generated.*, dist/, vendor/, *.snap, files headed "
+            "@generated or DO NOT EDIT)."
+        ),
+    )
+    parser.add_argument(
+        "--keep-path",
+        dest="keep_paths",
+        action="append",
+        default=[],
+        metavar="PATTERN",
+        help=(
+            "Always send files matching PATTERN (same syntax as --ignore-path), "
+            "past every default exclusion and the large-PR trim. Repeatable. For "
+            "markdown a program reads that the code-input defaults miss."
+        ),
+    )
+    parser.add_argument(
+        "--trim-above",
+        dest="trim_above",
+        type=int,
+        default=DEFAULT_TRIM_ABOVE_TOKENS,
+        metavar="TOKENS",
+        help=(
+            "When the PR diff left after the default exclusions estimates over "
+            f"TOKENS (default {DEFAULT_TRIM_ABOVE_TOKENS:,}), drop tests until it "
+            "fits: those naming no changed source file first, largest first. "
+            "Migrations go next, only if dropping them makes it fit. A diff still "
+            "over is sent as it stands. 0 never trims."
         ),
     )
     parser.add_argument(
@@ -2429,18 +2583,19 @@ def main() -> None:
 
     # PR review mode
     if args.pr_number:
-        ignore_paths = list(DEFAULT_IGNORE_PATHS) + args.ignore_paths
         try:
             review_pr(
                 args.pr_number,
                 adapter,
                 roster,
                 args.message,
-                ignore_paths=ignore_paths,
+                ignore_paths=args.ignore_paths,
                 only_paths=args.only_paths,
                 context_files=attached,
                 whole_pass=not (args.ignore_paths or args.only_paths),
                 dry_run=args.dry_run,
+                keep_paths=args.keep_paths,
+                trim_above=args.trim_above,
             )
         except DiffTooLargeError as exc:
             print(f"Error: {exc}", file=sys.stderr)
