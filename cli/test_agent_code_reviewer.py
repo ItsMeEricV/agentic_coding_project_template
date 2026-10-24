@@ -5,13 +5,14 @@ Run with: python3 -m unittest cli.test_agent_code_reviewer -v
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import sys
 import tempfile
 import unittest
 import urllib.error
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import date, datetime
 from email.message import Message
 from io import StringIO
@@ -24,7 +25,6 @@ from agent_code_reviewer import (  # noqa: E402
     CHARS_PER_TOKEN,
     DEFAULT_CONTEXT_WINDOW,
     REPLY_RESERVE_TOKENS,
-    DEFAULT_IGNORE_PATHS,
     MAX_SLICE_RUNS,
     SLICE_GATE_TOKENS,
     ConfigError,
@@ -45,7 +45,6 @@ from agent_code_reviewer import (  # noqa: E402
     drop_already_posted,
     entries_that_fit,
     filter_catalog,
-    filter_diff,
     focus_file_path,
     prune_focus_paths,
     require_complete,
@@ -54,6 +53,7 @@ from agent_code_reviewer import (  # noqa: E402
     write_focus_file,
     VersionReport,
     format_catalog,
+    format_exclusions,
     format_focus_section,
     format_new_families,
     format_version_report,
@@ -70,6 +70,7 @@ from agent_code_reviewer import (  # noqa: E402
     parse_config,
     parse_focus_areas,
     parse_openrouter_catalog,
+    plan_pr_input,
 )
 
 
@@ -504,15 +505,18 @@ class PrDiffTests(unittest.TestCase):
             )
 
 
-def _openrouter_payload(content: str | None, finish: str) -> dict[str, object]:
+def _openrouter_payload(content: str | None, finish: str, cost: float | None = None) -> dict[str, object]:
+    usage: dict[str, object] = {
+        "prompt_tokens": 389454,
+        "completion_tokens": 128000,
+        "completion_tokens_details": {"reasoning_tokens": 128000},
+    }
+    if cost is not None:
+        usage["cost"] = cost
     return {
         "id": "gen-1761100000-abc",
         "choices": [{"finish_reason": finish, "message": {"role": "assistant", "content": content}}],
-        "usage": {
-            "prompt_tokens": 389454,
-            "completion_tokens": 128000,
-            "completion_tokens_details": {"reasoning_tokens": 128000},
-        },
+        "usage": usage,
     }
 
 
@@ -539,6 +543,13 @@ class ModelReplyTests(unittest.TestCase):
         )
         self.assertEqual(reply.generation_id, "gen-1761100000-abc")
         self.assertEqual((reply.prompt_tokens, reply.reasoning_tokens), (389_454, 128_000))
+
+    def test_openrouter_cost_is_read_and_reported(self):
+        reply = self.openrouter.extract_response(_openrouter_payload("{}", "stop", cost=1.45))
+        self.assertEqual(reply.cost, 1.45)
+        self.assertEqual(reply.usage(), "389,454 prompt + 128,000 completion (128,000 reasoning); cost $1.4500")
+        self.assertIn("cost $1.4500", reply.describe())
+        self.assertIsNone(self.openrouter.extract_response(_openrouter_payload("{}", "stop")).cost)
 
     def test_empty_content_is_refused_with_stop_reason_usage_and_generation_id(self):
         reply = self.openrouter.extract_response(_openrouter_payload(None, "stop"))
@@ -618,6 +629,62 @@ class ReviewPrRefusalTests(unittest.TestCase):
         self.assertFalse([c for c in calls if c[:2] == ["gh", "api"]])
 
 
+class _RecordingOpenRouter(_CannedOpenRouter):
+    def call_api(self, request_body):
+        self.sent = request_body
+        return self.canned
+
+
+class ReviewPrExclusionTests(unittest.TestCase):
+    PR = "990085"
+
+    def tearDown(self):
+        focus_file_path(self.PR, "owner_repo").unlink(missing_ok=True)
+
+    def test_dry_run_names_what_was_left_out_to_the_model_and_on_stdout(self):
+        roster = parse_config(_raw([{"key": "a", "name": "A", "access_method": "openrouter", "id": "v/m"}]))
+        adapter = _RecordingOpenRouter(roster.entries[0], _openrouter_payload('{"summary": "ok"}', "stop", cost=1.45))
+        diff = _block("src/a.ts") + _block("pnpm-lock.yaml") + _block("docs/x.md")
+        patch, _ = fake_subprocess(
+            (0, diff, ""),
+            (0, f'{{"title": "t", "body": "b", "headRefOid": "{PR_HEAD}"}}', ""),
+            (0, "owner/repo\n", ""),
+        )
+        out = StringIO()
+        with patch, redirect_stderr(StringIO()), redirect_stdout(out):
+            review_pr(self.PR, adapter, roster, dry_run=True)
+        prompt = adapter.sent["messages"][-1]["content"]
+        self.assertIn("<excluded_files>", prompt)
+        self.assertIn("pnpm-lock.yaml", prompt)
+        self.assertNotIn("diff --git a/pnpm-lock.yaml", prompt)
+        printed = json.loads(out.getvalue())
+        self.assertEqual(printed["excluded"], {"lockfiles": ["pnpm-lock.yaml"], "docs": ["docs/x.md"]})
+        self.assertIn("lockfiles: 1, docs: 1", printed["summary"])
+        self.assertEqual(
+            printed["usage"],
+            {"prompt_tokens": 389_454, "completion_tokens": 128_000, "reasoning_tokens": 128_000, "cost": 1.45},
+        )
+
+
+class ExclusionReportTests(unittest.TestCase):
+    def test_counts_per_category_in_report_order(self):
+        self.assertEqual(format_exclusions({"docs": ["a.md", "b.md"], "tests": ["a.test.ts"]}), "docs: 2, tests: 1")
+        self.assertEqual(format_exclusions({}), "")
+
+    def test_prompt_block_lists_paths_before_the_diff_and_caps_each_category(self):
+        tests = [f"t{i}.test.ts" for i in range(45)]
+        prompt = build_pr_prompt("DIFF", "", "", [], {"lockfiles": ["yarn.lock"], "tests": tests})
+        block = prompt[prompt.index("<excluded_files>") : prompt.index("</excluded_files>")]
+        self.assertLess(prompt.index("</excluded_files>"), prompt.index("Review this PR diff:"))
+        self.assertIn("lockfiles (1): yarn.lock", block)
+        self.assertIn("tests (45): t0.test.ts", block)
+        self.assertIn("t39.test.ts, and 5 more", block)
+        self.assertNotIn("t40.test.ts", block)
+
+    def test_no_exclusions_means_no_block(self):
+        self.assertNotIn("<excluded_files>", build_pr_prompt("DIFF", "", "", [], {}))
+
+
 class IgnorePathTests(unittest.TestCase):
     def test_bracketed_route_path_matches_literally(self):
         path = "app/api/auth/[...nextauth]/route.ts"
@@ -628,48 +695,122 @@ class IgnorePathTests(unittest.TestCase):
         self.assertTrue(_path_matches_any("x/y.snap", ["*.snap"]))
         self.assertFalse(_path_matches_any("src/y.ts", ["docs/", "*.snap"]))
 
-    def test_default_ignores_drop_lockfiles_at_any_depth(self):
-        diff = (
-            "diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml\n+x\n"
-            "diff --git a/src/a.ts b/src/a.ts\n+y\n"
-        )
-        kept, dropped = filter_diff(diff, list(DEFAULT_IGNORE_PATHS))
-        self.assertEqual(dropped, ["pnpm-lock.yaml"])
-        self.assertIn("src/a.ts", kept)
+    def test_double_star_prefix_matches_at_the_root_and_any_depth(self):
+        self.assertTrue(_path_matches_any("pnpm-lock.yaml", ["**/pnpm-lock.yaml"]))
+        self.assertTrue(_path_matches_any("apps/web/pnpm-lock.yaml", ["**/pnpm-lock.yaml"]))
+        self.assertTrue(_path_matches_any("packages/ui/dist/a.js", ["**/dist/"]))
+        self.assertFalse(_path_matches_any("src/distance.ts", ["**/dist/"]))
 
-    def test_default_ignores_drop_prose_and_license_text(self):
+
+def _block(path: str, body: str = "+x\n", start: int = 1) -> str:
+    """One file's unified-diff block adding `body` from new line `start`."""
+    return f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -0,0 +{start},1 @@\n{body}"
+
+
+def _sized(path: str, tokens: int, text: str = "x") -> str:
+    """A block whose annotated size estimates to about `tokens` tokens."""
+    line = f"+{text} " + "y" * 60 + "\n"
+    return _block(path, line * max(1, int(tokens * CHARS_PER_TOKEN / (len(line) + 6))))
+
+
+class InputPlanTests(unittest.TestCase):
+    def test_lockfiles_are_never_sent_at_any_depth(self):
+        locks = ["pnpm-lock.yaml", "apps/web/package-lock.json", "rust/Cargo.lock", "go.sum"]
+        plan = plan_pr_input("".join(_block(p) for p in [*locks, "src/a.ts"]))
+        self.assertEqual(plan.excluded, {"lockfiles": locks})
+        self.assertIn("src/a.ts", plan.diff)
+
+    def test_prose_and_docs_are_never_sent(self):
         prose = [
             "README.md",
             "docs/rfcs/0009.md",
+            "docs/diagram.png",
             ".trail/learnings/fetch-quirk.md",
             "images/runner-base/licenses/open-code-review-LICENSE",
         ]
-        diff = "".join(f"diff --git a/{p} b/{p}\n+x\n" for p in [*prose, "src/a.ts"])
-        kept, dropped = filter_diff(diff, list(DEFAULT_IGNORE_PATHS))
-        self.assertEqual(dropped, prose)
-        self.assertIn("src/a.ts", kept)
+        plan = plan_pr_input("".join(_block(p) for p in [*prose, "src/a.ts"]))
+        self.assertEqual(plan.excluded, {"docs": prose})
 
+    def test_markdown_a_program_reads_is_sent(self):
+        code_input = [
+            ".werkshop/workshops/werkshop/prompts/plan.md",
+            "agents/review.prompt.md",
+            "packages/wrapper/src/task-file/__snapshots__/coding.task.md",
+        ]
+        plan = plan_pr_input("".join(_block(p) for p in code_input))
+        self.assertEqual(plan.excluded, {})
+        for path in code_input:
+            self.assertIn(path, plan.diff)
 
-class OnlyPathTests(unittest.TestCase):
-    DIFF = (
-        "diff --git a/core/session/a.ts b/core/session/a.ts\n+a\n"
-        "diff --git a/apps/api/b.ts b/apps/api/b.ts\n+b\n"
-        "diff --git a/core/session/a.test.ts b/core/session/a.test.ts\n+t\n"
-    )
+    def test_generated_output_is_never_sent(self):
+        generated = [
+            "src/api.generated.ts",
+            "packages/ui/dist/index.js",
+            "vendor/github.com/x/y.go",
+            "src/__snapshots__/a.test.ts.snap",
+        ]
+        marked = _block("proto/user.pb.go", "+// Code generated by protoc-gen-go. DO NOT EDIT.\n+package proto\n")
+        plan = plan_pr_input("".join(_block(p) for p in generated) + marked)
+        self.assertEqual(plan.excluded, {"generated": [*generated, "proto/user.pb.go"]})
 
-    def test_only_keeps_matching_blocks(self):
-        kept, dropped = filter_diff(self.DIFF, [], ["core/session/"])
-        self.assertIn("core/session/a.ts", kept)
-        self.assertNotIn("apps/api/b.ts", kept)
-        self.assertEqual(dropped, ["apps/api/b.ts"])
+    def test_generated_detection_stays_conservative(self):
+        kept = [
+            _block("schema/workshop/v1.json", '+{\n+  "$schema": "x"\n'),  # unmarked: may be hand-written
+            _block("src/a.ts", "+// DO NOT EDIT the order below\n", start=40),  # not a file header
+            _block("packages/external-services/model-vendor/client.ts"),
+            _block("db/migrations/2026_vendor/migration.sql"),
+        ]
+        self.assertEqual(plan_pr_input("".join(kept)).excluded, {})
 
-    def test_ignore_still_applies_inside_only(self):
-        kept, dropped = filter_diff(self.DIFF, ["*.test.ts"], ["core/session/"])
-        self.assertNotIn("a.test.ts", kept)
-        self.assertEqual(sorted(dropped), ["apps/api/b.ts", "core/session/a.test.ts"])
+    def test_tests_and_migrations_are_sent_when_the_diff_is_under_the_threshold(self):
+        diff = _sized("src/a.ts", 1_000) + _sized("src/a.test.ts", 1_000) + _sized("db/migrations/1/m.sql", 500)
+        plan = plan_pr_input(diff, trim_above=5_000)
+        self.assertEqual(plan.excluded, {})
+        self.assertEqual(plan.diff, diff)
 
-    def test_no_patterns_is_identity(self):
-        self.assertEqual(filter_diff(self.DIFF, [], []), (self.DIFF, []))
+    def test_over_the_threshold_unrelated_tests_go_before_related_ones(self):
+        diff = (
+            _sized("src/landing-service.ts", 3_000)
+            + _sized("src/landing-service.test.ts", 2_000)
+            + _sized("src/other/billing.test.ts", 2_000)
+            + _sized("test-support/fake-github.ts", 2_000, text="import { landing } from '../src/landing-service'")
+            + _sized("db/migrations/1/m.sql", 500)
+        )
+        plan = plan_pr_input(diff, trim_above=8_000)
+        self.assertEqual(plan.excluded, {"tests": ["src/other/billing.test.ts"]})
+        self.assertIn("db/migrations/1/m.sql", plan.diff)
+        self.assertLessEqual(plan.tokens_sent, 8_000)
+        self.assertGreater(plan.tokens_before, 8_000)
+
+    def test_migrations_go_only_after_every_test_and_only_when_that_fits(self):
+        base = _sized("src/a.ts", 3_000) + _sized("src/a.test.ts", 1_000)
+        fits = plan_pr_input(base + _sized("db/migrations/1/m.sql", 2_000), trim_above=4_000)
+        self.assertEqual(fits.excluded, {"tests": ["src/a.test.ts"], "migrations": ["db/migrations/1/m.sql"]})
+        still_huge = plan_pr_input(base + _sized("db/migrations/1/m.sql", 2_000), trim_above=2_000)
+        self.assertEqual(still_huge.excluded, {"tests": ["src/a.test.ts"]})
+        self.assertIn("db/migrations/1/m.sql", still_huge.diff)
+
+    def test_zero_threshold_never_trims(self):
+        diff = _sized("src/a.ts", 3_000) + _sized("src/a.test.ts", 3_000)
+        self.assertEqual(plan_pr_input(diff, trim_above=0).excluded, {})
+
+    def test_keep_path_overrides_every_exclusion(self):
+        diff = _block("SKILL.md") + _block("pnpm-lock.yaml") + _sized("src/a.ts", 3_000) + _sized("src/a.test.ts", 3_000)
+        plan = plan_pr_input(diff, keep_paths=["SKILL.md", "*.test.ts"], trim_above=1_000)
+        self.assertEqual(plan.excluded, {"lockfiles": ["pnpm-lock.yaml"]})
+        self.assertIn("SKILL.md", plan.diff)
+
+    def test_ignore_and_only_paths_are_reported_as_their_own_categories(self):
+        diff = _block("core/session/a.ts") + _block("apps/api/b.ts") + _block("core/session/a.test.ts")
+        plan = plan_pr_input(diff, ignore_paths=["*.test.ts"], only_paths=["core/session/"])
+        self.assertEqual(plan.excluded, {"--ignore-path": ["core/session/a.test.ts"], "--only-path": ["apps/api/b.ts"]})
+        self.assertIn("core/session/a.ts", plan.diff)
+
+    def test_nothing_to_exclude_is_identity(self):
+        diff = _block("src/a.ts") + _block("src/b.py")
+        plan = plan_pr_input(diff)
+        self.assertEqual((plan.diff, plan.excluded), (diff, {}))
+        self.assertEqual(plan.tokens_before, plan.tokens_sent)
 
 
 class FocusFileTests(unittest.TestCase):
