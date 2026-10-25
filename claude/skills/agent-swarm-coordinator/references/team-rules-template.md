@@ -41,13 +41,13 @@ Marking the PR ready and merging happen only on <the user's / the coordinator's>
 
 ## Checks
 
-- Locally, run only what your change affects: `<affected-only command>`.
+- Locally, run only what your change affects, linting and testing only the packages you touch: `<affected-only command>`.
 - The gate before merge: merge `origin/main`, run `<gate command>`, paste its summary in the PR body.
 - <When CI runs, and that sessions never add a workflow or job.>
 
 ## Shared machine
 
-- Heavy runs (<list>) take the lock first: `until mkdir /tmp/<project>-heavy.lock 2>/dev/null; do sleep 15; done`, and `rmdir /tmp/<project>-heavy.lock` when the run ends, pass or fail.
+- Heavy runs (<list>) take the lock first: `until mkdir /tmp/<project>-heavy.lock 2>/dev/null; do sleep 15; done; echo "$$ $(ps -o lstart= -p $$ | xargs)" > /tmp/<project>-heavy.lock/holder`, and release it (`rm -f` the holder file, then `rmdir`) when the run ends, pass or fail.
 - Run tests in the foreground. If a run would pass the tool timeout, split it.
 - <Shared resources: who may touch them, ask the coordinator before <commands>, and how to free one when done.>
 - Never `cd` into another worktree; read it with `git -C <path>`.

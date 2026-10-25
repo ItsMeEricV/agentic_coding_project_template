@@ -18,7 +18,7 @@ Another path is fine if `AGENTS.md` names it. Together with the skill they must 
 | 5   | The heavy-run lock path and which commands count as heavy                                                                                        | yes                   | —                                                                                               |
 | 6   | Single-owner resources (local stack, signed-in browser, shared daemon): how to tell who holds one, and how to move it with no step from the user | when any exist        | —                                                                                               |
 | 7   | That every lint/test/typecheck/format config ignores `.claude/`                                                                                  | yes                   | —                                                                                               |
-| 8   | The spend ledger (the query) and vendor caps; what counts as a paid run; the per-run cap                                                         | when anything is paid | $3 per run                                                                                      |
+| 8   | The spend ledger (the query), each vendor's meter (MCP or CLI call) and caps; what counts as a paid run; the per-run cap                         | when anything is paid | $3 per run                                                                                      |
 | 9   | The merge gate: the command, where its summary goes, who runs the full check on main and when, branch-protection quirks                          | yes                   | affected-only check on the branch merged with main; full check on main after merges             |
 | 10  | The review order for ticket PRs                                                                                                                  | no                    | draft PR → the project's review skills → reply on the PR                                        |
 | 11  | What the user has delegated to the coordinator beyond the skill's table                                                                          | no                    | the skill's table                                                                               |
@@ -62,14 +62,14 @@ The <project> half of the coordinator's job; the generic half is the `agent-swar
 
 ## Spend
 
-- Ledger: `<query>`. Vendor caps: <key, cap, the exact refusal text>.
+- Ledger: `<query>`. Vendor meters: `<MCP or CLI call>`. Vendor caps: <key, cap, the exact refusal text>.
 - Paid runs: <what counts>. Cap per run: $<n>; halt at the first loop sign.
 
 ## Merges and CI
 
 - Gate: `<command>` on the branch merged with `main`, its summary pasted in the PR body.
 - After merges: the coordinator runs `<full check>` on `main` in the main checkout, under the heavy lock.
-- CI: <when it runs, who starts it, what it costs>. Branch protection: <quirks, e.g. PRs only, even for fixtures>.
+- CI and Git-connected integrations: <what one push triggers, who starts it, what it costs>. Branch protection: <quirks, e.g. PRs only, even for fixtures>.
 
 ## Delegated to the coordinator
 
