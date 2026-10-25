@@ -26,7 +26,7 @@ CMUX_QUIET=1 cmux new-workspace --name "<workspace name>" --cwd <worktree> --foc
 - Name workspaces and Remote Control titles the same way, with the project and ticket (`<Project> T<n> <topic>`), so the user finds them on a phone.
 - A running session without Remote Control: `cmux send --workspace <ref> "/remote-control"`, then `cmux send-key --workspace <ref> Enter`.
 - Read its screen: `cmux read-screen --workspace <ref> --lines 40`.
-- Close a finished one: `cmux close-workspace --workspace workspace:<n>`. Killing a session's process is the user's call.
+- Close a finished one: `cmux workspace close workspace:<n>` (the legacy `close-workspace` verb takes `--workspace`, not a positional ref). Killing a session's process is the user's call.
 
 Run `cmux --help` for the current subcommands before scripting against them; the CLI moves faster than this file.
 
