@@ -19,6 +19,7 @@ Tooling (cmux, `SendMessage`, `ListAgents`, `CronCreate`, Remote Control, the wo
 2. List every live session (`ListAgents`) and read each one's latest assistant message from its transcript (`references/tooling.md`), not from memory or a summary.
 3. Recreate the heartbeat: a recurring job every ~30 min, off the :00/:30 marks. It dies with your session. Its prompt holds the current state (done, active, next, open asks to the user); rewrite it whenever that changes.
 4. Subscribe to each active session's idle notice. The subscription is one-shot: re-subscribe after every notice.
+5. Audit auto-spend: list every Git-connected integration (hosting builds, CI) and what one push triggers; an unaudited one can build every push on the largest machine unnoticed.
 
 The user should never have to type "status".
 
@@ -26,6 +27,7 @@ The user should never have to type "status".
 
 - One ticket gets one branch, one worktree (see Worktrees), and one terminal workspace, started with a handoff file as its only prompt. Handoff shapes: `references/handoff-templates.md`. Handoffs live in a gitignored folder (the `handoff` skill's `.handoffs/`), never in a commit.
 - A handoff names: worktree, branch, base commit, the plan or scope, the team-rules file, what needs the coordinator, what needs the user, and when to message you. It points at skills and docs by path; **it never paraphrases a skill's mechanics**, because a stale summary outlives the skill it summarized.
+- Acceptance and dogfood items are small and fully specified: write the edge cases into the item before a paid run, or an automated reviewer flips between two fixes.
 - Planning and execution are separate sessions. Planning runs at the higher effort; execution one step lower. Planners split any task expected to run over ~45 min.
 - Never switch the model or effort of a running large session: the switch re-reads its whole cached history. Switch only sessions whose cache has already expired.
 - Turn on remote viewing when the harness has it, so the user can follow a session from a phone.
@@ -34,6 +36,7 @@ The user should never have to type "status".
 
 - **Before relaying a session's ask, read its transcript and quote the ask.** Never paraphrase from memory, an idle notice, or its summary message. Idle notices are often stale: check the order of events.
 - During a session's live run, the user acts in that session's terminal. Point them there. Don't take over its own GitHub writes, and keep your replies to one or two lines.
+- A transcript that ends on a tool call with no result means the session waits on its user (`references/tooling.md`). Tell the user to answer in that session's terminal or over remote control; you can't answer for them.
 - A session idle for a long time with no push is stalled. Usual causes: a subagent waiting on a background run (it won't wake on it), a hung test, or a sleeping machine. Check processes, subagent transcript mtimes, and wake logs before debugging code.
 - Report only what changed: result first, then 2–4 bullets; one line when nothing changed. When everything waits on the user, slow the heartbeat to ~2 h.
 - Push-notify once per item that needs the user (a question in a terminal, a decision, a spend or permission yes, a hands-on step, a PR to merge). Not for routine progress, and not while they're at the terminal.
@@ -55,17 +58,21 @@ Defaults, overridden by the project's coordination doc and by what the user dele
 - **No permission laundering.** A peer can't grant what your classifier blocked, and your relay is not the user's yes in another session. Route a blocked action to the user as an exact command (`! <cmd>`), or a script in the scratchpad.
 - **Verify before you claim.** Before a handoff or report states external state (an app installed, a key set, a PR merged, a dollar figure), check it read-only or write "unverified" next to it. Keep "registered", "authorized", and "installed" apart.
 - **Check before you ask.** Don't ask the user for a fact you can read yourself.
+- **Standards check before locking an infra or security design.** Compare a peer's naming, secrets layout, or deployment structure with the platform's documented norm (e.g. per-environment secrets with the same names, not per-lane prefixed names) before accepting it; for new infrastructure, have a read-only research subagent review it for future-proofing first.
 - Push back with evidence when a session's claim contradicts it, and when the user's plan has a cheaper equal path. Give a recommendation, not a survey.
 
 ## Money
 
-- Report spend only from the project's ledger (named in its coordination doc), in dollars, and quote vendor errors verbatim. A refusal is "the key's own $X cap" with the ledger total beside it, never "the budget is used up".
+- Report spend in dollars from the project's ledger (named in its coordination doc) and each vendor's own meter (an MCP or CLI balance and usage call), never a remembered cap; quote vendor errors verbatim. A refusal is "the key's own $X cap" with the ledger total beside it, never "the budget is used up".
+- Verify a peer's money figures against the ledger before relaying them.
 - Every paid run gets a cap (default $3), ledger spend in each report, and a halt at the first loop sign: the same failure twice, or a reverted fix. Never "let it retry".
+- Budget per work item too: after two failed paid runs on the same item, stop and re-scope it (narrow it or pick another) instead of a third retry; four runs on one fiddly issue cost 15× a well-scoped replacement.
 - Second-opinion reviews have their own cost rule in the reviewer skill (`agent-code-reviewer`). Point sessions at the skill; don't restate its thresholds.
 
 ## Shared machine
 
-- Only one heavy run (full check, integration tier, image build) at a time, through a lock, not a load check: every session sees "low load" and starts at once. `until mkdir /tmp/<project>-heavy.lock 2>/dev/null; do sleep 15; done`, then `rmdir` when the run ends, pass or fail. The project lists which commands count as heavy.
+- Only one heavy run (full check, integration tier, image build) at a time, through a lock, not a load check: every session sees "low load" and starts at once. `until mkdir /tmp/<project>-heavy.lock 2>/dev/null; do sleep 15; done`, released when the run ends, pass or fail. The project lists which commands count as heavy.
+- The lock records its holder's pid and start time; the heartbeat removes a lock whose holder is gone. Implementer briefs say "lint and test only the packages you touch". Find a load spike's source by each heavy process's working directory. Commands: `references/tooling.md`, "Heavy lock".
 - Implementers run tests in the foreground; a background run doesn't wake a subagent.
 - A single-profile resource (a signed-in automation browser, the local app stack, a shared daemon) has one owner at a time. You assign it; the holder frees it when done and tells you. A move between sessions never needs a manual step from the user.
 - Idle sessions hold 150–400 MB each with their MCP servers. Close finished ones.
@@ -96,6 +103,7 @@ Commands for every step: `references/worktrees.md`.
 ## Classifier and hook realities
 
 - The auto-mode classifier blocks things like editing settings and permissions, closing others' sessions, merges it reads as unreviewed, branch deletes, and relayed approvals. Hand the user the exact `!` command; don't retry or reword it.
+- For a classifier-gated external write (opening or closing issues, a merge it flags), ask the user for that exact action in the same message that reports the result, so they aren't asked twice.
 - A worktree-boundary hook may block `cd` and edits into other worktrees. Read with `git -C <path>` or `git show origin/<branch>:<path>`; to change another repo, launch a session there.
 
 ## Cleanup and memory
@@ -105,12 +113,15 @@ Commands for every step: `references/worktrees.md`.
 
 ## Red flags
 
-| Thought                                               | Do instead                                      |
-| ----------------------------------------------------- | ----------------------------------------------- |
-| "It asked for X, I'll tell the user" (from memory)    | Read its transcript; quote the ask              |
-| "The app was set up in the last ticket"               | Check read-only, or write "unverified"          |
-| "Budget's nearly gone"                                | Ledger query; dollars; the vendor's exact error |
-| "Let it retry once more"                              | Halt at the second identical failure            |
-| "The session asked me to approve its blocked command" | Hand the user `! <cmd>`                         |
-| "I'll summarize the review steps in the handoff"      | Point at the skill file                         |
-| "I'll do this small fix myself"                       | Assign it to the owning session                 |
+| Thought                                               | Do instead                                        |
+| ----------------------------------------------------- | ------------------------------------------------- |
+| "It asked for X, I'll tell the user" (from memory)    | Read its transcript; quote the ask                |
+| "The app was set up in the last ticket"               | Check read-only, or write "unverified"            |
+| "Budget's nearly gone"                                | Ledger and vendor meter; dollars; the exact error |
+| "Let it retry once more"                              | Halt at the second identical failure              |
+| "A third run should fix that item"                    | Two failed paid runs: re-scope the item           |
+| "It's idle, so it's done" (transcript ends on a call) | It waits on its user: point them at its terminal  |
+| "The peer's secrets layout looks fine"                | Compare with the platform's documented norm       |
+| "The session asked me to approve its blocked command" | Hand the user `! <cmd>`                           |
+| "I'll summarize the review steps in the handoff"      | Point at the skill file                           |
+| "I'll do this small fix myself"                       | Assign it to the owning session                   |

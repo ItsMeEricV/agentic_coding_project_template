@@ -48,6 +48,45 @@ tail -n 60 "$f" | jq -r 'select(.type=="assistant") | .message.content[]? | sele
 
 Subagent transcripts sit beside it (`<session id>/subagents/`); their mtimes show whether a stalled session's subagent is still working. For a non-Claude harness, read its own session log, or its terminal (`cmux read-screen`, `tmux capture-pane -p`).
 
+### Blocked on a prompt
+
+A transcript whose last message is a tool call with no result means the session waits on its user (a permission prompt, a question). A tool that is still running looks the same, so confirm with the file's mtime and the screen:
+
+```bash
+tail -n 5 "$f" | jq -rs 'map(select(.type=="assistant" or .type=="user")) | last
+  | if .type=="assistant" and ([.message.content[]? | select(.type=="tool_use")] | length) > 0
+    then "WAITING: " + ([.message.content[] | select(.type=="tool_use") | .name] | join(",")) else "ok" end'
+cmux read-screen --workspace <ref> --lines 40
+```
+
+Quote the prompt to the user and point them at that session's terminal (or Remote Control). You can't answer for them.
+
+## Heavy lock
+
+The lock directory holds its holder's pid and start time, so a crashed holder is detectable:
+
+```bash
+lock=/tmp/<project>-heavy.lock
+until mkdir "$lock" 2>/dev/null; do sleep 15; done
+echo "$$ $(ps -o lstart= -p $$ | xargs)" > "$lock/holder"
+# ... heavy run ...
+rm -f "$lock/holder"; rmdir "$lock"
+```
+
+Stale check, run on each heartbeat: the lock is stale when the recorded pid is gone or now belongs to another process.
+
+```bash
+[ -s "$lock/holder" ] && read -r pid start < "$lock/holder" &&
+  { [ "$(ps -o lstart= -p "$pid" 2>/dev/null | xargs)" = "$start" ] || { rm -f "$lock/holder"; rmdir "$lock"; }; }
+```
+
+Source of a load spike: list the heaviest processes, then read each one's working directory to see which worktree runs it.
+
+```bash
+ps -axo pid=,pcpu=,comm= | sort -k2 -nr | head
+lsof -a -p <pid> -d cwd -Fn | rg '^n'
+```
+
 ## Messaging
 
 - `ListAgents` rows carry each session's name and cwd. Address sessions by the name in their handoff; check with `ListAgents` when a send fails.
