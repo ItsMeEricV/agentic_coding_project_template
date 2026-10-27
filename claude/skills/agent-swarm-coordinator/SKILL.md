@@ -38,7 +38,9 @@ The user should never have to type "status".
 - **Before relaying a session's ask, read its transcript and quote the ask.** Never paraphrase from memory, an idle notice, or its summary message. Idle notices are often stale: check the order of events.
 - During a session's live run, the user acts in that session's terminal. Point them there. Don't take over its own GitHub writes, and keep your replies to one or two lines.
 - A transcript that ends on a tool call with no result means the session waits on its user (`references/tooling.md`). Tell the user to answer in that session's terminal or over remote control; you can't answer for them.
-- A session idle for a long time with no push is stalled. Usual causes: a subagent waiting on a background run (it won't wake on it), a hung test, or a sleeping machine. Check processes, subagent transcript mtimes, and wake logs before debugging code.
+- **Claimed work needs a process.** When a session's last words say something is running (a test run, a subagent's task, a wait on the lock), find the process: a test or build whose working directory is in its worktree, a subagent listed busy, or a remote run in progress. None means the work died silently: tell the session to rerun it in the foreground and report. Commands: `references/tooling.md`, "Liveness".
+- **Unchanged and not waiting means stalled.** A screen unchanged since the last heartbeat, and not waiting on the user, a peer, a remote run, or the lock, gets a nudge with the next step from its plan. Check subagent transcript mtimes and wake logs (a sleeping machine looks stalled) before debugging code.
+- **Resume exited sessions.** A workspace with no agent process left gets `claude --resume` in its worktree and a one-line brief of where it stopped.
 - Report only what changed: result first, then 2–4 bullets; one line when nothing changed. When everything waits on the user, slow the heartbeat to ~2 h.
 - Push-notify once per item that needs the user (a question in a terminal, a decision, a spend or permission yes, a hands-on step, a PR to merge). Not for routine progress, and not while they're at the terminal.
 - Every few heartbeats, look at where a slow ticket's time went (oversized tasks, serial work that could be parallel, full-suite reruns in fix loops, review churn) and bring one concrete fix with numbers. Accepted fixes go into the team-rules doc.
@@ -84,8 +86,8 @@ Commands: `references/tooling.md`, "Remote runs".
 ## Shared machine
 
 - Only one heavy run (full check, integration tier, image build) at a time, through a lock, not a load check: every session sees "low load" and starts at once. `until mkdir /tmp/<project>-heavy.lock 2>/dev/null; do sleep 15; done`, released when the run ends, pass or fail. The project lists which commands count as heavy.
-- The lock records its holder's pid and start time; the heartbeat removes a lock whose holder is gone. Implementer briefs say "lint and test only the packages you touch". Find a load spike's source by each heavy process's working directory. Commands: `references/tooling.md`, "Heavy lock".
-- Implementers run tests in the foreground; a background run doesn't wake a subagent.
+- **A lock needs a live holder.** It records its holder's pid and start time; the heartbeat clears a lock whose holder process is gone and tells the holder. Implementer briefs say "lint and test only the packages you touch". Find a load spike's source by each heavy process's working directory. Commands: `references/tooling.md`, "Heavy lock".
+- Implementers run a test they wait on in the foreground, or in the background only with a completion notice they act on (a background run doesn't wake a subagent), and report "running" only with the process or run id.
 - A single-profile resource (a signed-in automation browser, the local app stack, a shared daemon) has one owner at a time. You assign it; the holder frees it when done and tells you. A move between sessions never needs a manual step from the user. When the user returns to a live check, move the resource back to that check's session before they act; a slot lent elsewhere meets their action with the wrong build.
 - Idle sessions hold 150–400 MB each with their MCP servers. Close finished ones.
 - A process "hung" during a long idle may be the machine asleep. Say so before debugging code.
@@ -134,6 +136,7 @@ Commands for every step: `references/worktrees.md`.
 | "Let it retry once more"                              | Halt at the second identical failure              |
 | "A third run should fix that item"                    | Two failed paid runs: re-scope the item           |
 | "It's idle, so it's done" (transcript ends on a call) | It waits on its user: point them at its terminal  |
+| A session says "running" and nothing is               | Find the process; none: rerun in the foreground   |
 | "The peer's secrets layout looks fine"                | Compare with the platform's documented norm       |
 | "The session asked me to approve its blocked command" | Hand the user `! <cmd>`                           |
 | "I'll summarize the review steps in the handoff"      | Point at the skill file                           |
