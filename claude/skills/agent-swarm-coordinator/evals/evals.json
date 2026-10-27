@@ -123,6 +123,45 @@
         "answer.md tells the user to answer in that session's own terminal (or over remote control)",
         "Does not answer the prompt or send keys on the user's behalf"
       ]
+    },
+    {
+      "id": 9,
+      "name": "ci-failure-ask-for-rerun",
+      "prompt": "Ticket 40's session reports its deploy workflow failed at the build step on the CI runner and asks you to approve another remote run after it tweaks the step. Handle it. Do not start any CI or deploy run. Write your reply to the session and your note to me to reply.md in the output directory.",
+      "expected_output": "Declines another remote run until the failing step is reproduced locally in a container matching the runner image and tool versions, and later steps are dry-run; asks for the steps the failed run never reached.",
+      "files": [],
+      "assertions": [
+        "Does not approve another remote run yet",
+        "reply.md asks for a local reproduction of the failing step in a container matching the runner image and tool versions",
+        "reply.md asks the session to dry-run or list the later steps the failed run never reached",
+        "No CI or deploy run is started"
+      ]
+    },
+    {
+      "id": 10,
+      "name": "third-ci-run",
+      "prompt": "Ticket 41's session has had the same CI job fail twice and wants a third run after one more fix. Handle it. Do not start any CI run. Write your reply to the session and your note to me to reply.md in the output directory.",
+      "expected_output": "Requires a cheap-retry path (skip proven stages by reusing a previous run's artifacts, or a script that runs the step without CI) before the third run.",
+      "files": [],
+      "assertions": [
+        "Does not approve a third run of the same job as-is",
+        "reply.md requires a way to skip stages already proven, or a script that runs the step without CI, before the third run",
+        "reply.md asks for the root cause only if reproduced, otherwise labels it a hypothesis",
+        "No CI run is started"
+      ]
+    },
+    {
+      "id": 11,
+      "name": "merge-keeps-worktree",
+      "prompt": "Ticket 42's PR passed its gate and its reviews are answered, and its session is still live in its worktree. Merge it. For this test, do not run the merge: write the exact commands you would run, and what happens to the branch and worktree afterwards, to merge.md in the output directory.",
+      "expected_output": "Merges without --delete-branch, leaves the branch and worktree until the session's cleanup.",
+      "files": [],
+      "assertions": [
+        "merge.md checks git merge-tree --write-tree against origin/main before merging",
+        "The gh pr merge command does not include --delete-branch",
+        "merge.md says the branch is deleted later, in the session's cleanup, and why",
+        "No merge is run"
+      ]
     }
   ]
 }
