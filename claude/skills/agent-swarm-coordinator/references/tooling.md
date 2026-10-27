@@ -87,6 +87,26 @@ ps -axo pid=,pcpu=,comm= | sort -k2 -nr | head
 lsof -a -p <pid> -d cwd -Fn | rg '^n'
 ```
 
+## Remote runs
+
+A CI or deploy run is the last check. Before asking for one:
+
+```bash
+rg -n 'runs-on|image:|node-version|python-version|uses:' .github/workflows   # runner image and tool versions
+docker run --rm -it -v "$PWD":/work -w /work <runner image> bash             # then run the failing step's exact commands
+```
+
+- Pin the same tool versions as the workflow, not the ones on your machine.
+- Dry-run every later step the change touches with the tool's own plan or dry-run mode, so a step the failed run never reached fails here instead.
+- Cheap retries: give the workflow an input that takes a previous run's id and skips stages already proven (`gh run download <run-id>` fetches its artifacts), or keep a script that runs the step without CI.
+
+Audit triggers at takeover. Every `on:` of `push`, `pull_request`, or `schedule` is a standing cost:
+
+```bash
+rg -n -A4 '^on:' .github/workflows
+gh run list --limit 200 --json event,name | jq 'group_by(.event) | map({event: .[0].event, runs: length})'
+```
+
 ## Messaging
 
 - `ListAgents` rows carry each session's name and cwd. Address sessions by the name in their handoff; check with `ListAgents` when a send fails.

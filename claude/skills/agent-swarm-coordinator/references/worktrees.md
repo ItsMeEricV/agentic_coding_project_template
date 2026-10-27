@@ -68,6 +68,8 @@ git -C <main> branch -d <branch>
 
 `git cherry` compares patches, so it sees commits that landed through a squash or rebase merge as present (`-`) when the patch is unchanged. A merge-commit PR leaves `git branch -d` happy on its own. If `-d` refuses after a squash merge and `git cherry` shows only `-` lines, the commits are on main: ask the user for `git branch -D <branch>`. The remote branch (`git push origin --delete <branch>`) is the user's call too.
 
+Merge the PR without `--delete-branch` (`gh pr merge <n> --squash`): that flag also removes the worktree the branch is checked out in, under a live session. The branch goes in this cleanup.
+
 Removing a worktree deletes the directory only. Its branch and commits stay, so a removed worktree can be recreated with `git worktree add <path> <branch>`.
 
 ## Heartbeat sweep

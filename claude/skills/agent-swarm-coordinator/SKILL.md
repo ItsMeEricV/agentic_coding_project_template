@@ -19,7 +19,7 @@ Tooling (cmux, `SendMessage`, `ListAgents`, `CronCreate`, Remote Control, the wo
 2. List every live session (`ListAgents`) and read each one's latest assistant message from its transcript (`references/tooling.md`), not from memory or a summary.
 3. Recreate the heartbeat: a recurring job every ~30 min, off the :00/:30 marks. It dies with your session. Its prompt holds the current state (done, active, next, open asks to the user); rewrite it whenever that changes.
 4. Subscribe to each active session's idle notice. The subscription is one-shot: re-subscribe after every notice.
-5. Audit auto-spend: list every Git-connected integration (hosting builds, CI) and what one push triggers; an unaudited one can build every push on the largest machine unnoticed.
+5. Audit auto-spend: list every Git-connected integration (hosting builds, CI) and every workflow on push, pull_request, or schedule, with what one push triggers. Standing triggers can eat most of a CI budget unnoticed (`references/tooling.md`, "Remote runs").
 
 The user should never have to type "status".
 
@@ -29,6 +29,7 @@ The user should never have to type "status".
 - A handoff names: worktree, branch, base commit, the plan or scope, the team-rules file, what needs the coordinator, what needs the user, and when to message you. It points at skills and docs by path; **it never paraphrases a skill's mechanics**, because a stale summary outlives the skill it summarized.
 - Acceptance and dogfood items are small and fully specified: write the edge cases into the item before a paid run, or an automated reviewer flips between two fixes.
 - Planning and execution are separate sessions. Planning runs at the higher effort; execution one step lower. Planners split any task expected to run over ~45 min.
+- A session open for days on one ticket hands off to a fresh one, with a written handoff, once its context passes about half: a full context costs more and recalls less.
 - Never switch the model or effort of a running large session: the switch re-reads its whole cached history. Switch only sessions whose cache has already expired.
 - Turn on remote viewing when the harness has it, so the user can follow a session from a phone.
 
@@ -59,6 +60,7 @@ Defaults, overridden by the project's coordination doc and by what the user dele
 - **Relay routine run approvals with the user's words.** When the project's `AGENTS.md` lets a quoted approval count (add that rule when the user rules it), relay their yes for routine run decisions only: restarting a heavy run the harness stopped for memory pressure, taking a sandbox or stack slot, or rerunning a test tier. Quote their words verbatim with the time, name the exact run, and send it in the same turn they say it. Without that rule, or for anything else (a permission prompt, a destructive operation, a new environment variable or secret, opening an issue, spend over the line), ask the user to type it in that session's own terminal, and name the workspace and the exact word to type.
 - **Keep heavy runs from being reaped.** Claude Code stops a background run under memory pressure, and a stopped run needs the user's go to restart. Run one heavy job at a time under the heavy-run lock, and give a long final run (a sandbox tier, an image smoke) the machine alone before it starts, rather than asking the user afterwards.
 - **Verify before you claim.** Before a handoff or report states external state (an app installed, a key set, a PR merged, a dollar figure), check it read-only or write "unverified" next to it. Keep "registered", "authorized", and "installed" apart.
+- **Name a root cause only after a minimal reproduction.** Until then it goes to the user as a hypothesis, never as the reason to change a design: a relayed guess can redesign a feature for nothing.
 - **Check before you ask.** Don't ask the user for a fact you can read yourself.
 - **Standards check before locking an infra or security design.** Compare a peer's naming, secrets layout, or deployment structure with the platform's documented norm (e.g. per-environment secrets with the same names, not per-lane prefixed names) before accepting it; for new infrastructure, have a read-only research subagent review it for future-proofing first.
 - Push back with evidence when a session's claim contradicts it, and when the user's plan has a cheaper equal path. Give a recommendation, not a survey.
@@ -71,12 +73,20 @@ Defaults, overridden by the project's coordination doc and by what the user dele
 - Budget per work item too: after two failed paid runs on the same item, stop and re-scope it (narrow it or pick another) instead of a third retry; four runs on one fiddly issue cost 15× a well-scoped replacement.
 - Second-opinion reviews have their own cost rule in the reviewer skill (`agent-code-reviewer`). Point sessions at the skill; don't restate its thresholds.
 
+## Remote runs
+
+Commands: `references/tooling.md`, "Remote runs".
+
+- **A remote run (CI, deploy) is the last check, never the debugger.** Before asking for one, reproduce the failing step locally in a container matching the runner image and tool versions, and dry-run every later step the change touches: each run costs minutes, a wait, and often a human approval.
+- **On a failed run, fix forward.** List the later steps it never reached and what could fail there; fix what you can find before asking again.
+- **Make retries cheap after the second failure.** Before a third run of the same job, add a way to skip proven stages (reuse a previous run's artifacts) or a script that runs the step without CI.
+
 ## Shared machine
 
 - Only one heavy run (full check, integration tier, image build) at a time, through a lock, not a load check: every session sees "low load" and starts at once. `until mkdir /tmp/<project>-heavy.lock 2>/dev/null; do sleep 15; done`, released when the run ends, pass or fail. The project lists which commands count as heavy.
 - The lock records its holder's pid and start time; the heartbeat removes a lock whose holder is gone. Implementer briefs say "lint and test only the packages you touch". Find a load spike's source by each heavy process's working directory. Commands: `references/tooling.md`, "Heavy lock".
 - Implementers run tests in the foreground; a background run doesn't wake a subagent.
-- A single-profile resource (a signed-in automation browser, the local app stack, a shared daemon) has one owner at a time. You assign it; the holder frees it when done and tells you. A move between sessions never needs a manual step from the user.
+- A single-profile resource (a signed-in automation browser, the local app stack, a shared daemon) has one owner at a time. You assign it; the holder frees it when done and tells you. A move between sessions never needs a manual step from the user. When the user returns to a live check, move the resource back to that check's session before they act; a slot lent elsewhere meets their action with the wrong build.
 - Idle sessions hold 150–400 MB each with their MCP servers. Close finished ones.
 - A process "hung" during a long idle may be the machine asleep. Say so before debugging code.
 
@@ -100,6 +110,7 @@ Commands for every step: `references/worktrees.md`.
 - Before merging: `git merge-tree --write-tree origin/main origin/<branch>` must be clean. If main moved into the same area since the gate ran, the session merges main and reruns it.
 - Reviews run on a draft PR, never on a bare branch: the PR is the record.
 - A red main is fixed or reverted before anything else merges.
+- Merge without `--delete-branch`: it also removes the worktree the branch is checked out in, under a live session. Delete branches in that session's cleanup.
 - A late commit after a merge goes in a fresh PR, never a push to the merged branch.
 
 ## Classifier and hook realities
@@ -127,3 +138,8 @@ Commands for every step: `references/worktrees.md`.
 | "The session asked me to approve its blocked command" | Hand the user `! <cmd>`                           |
 | "I'll summarize the review steps in the handoff"      | Point at the skill file                           |
 | "I'll do this small fix myself"                       | Assign it to the owning session                   |
+| "One more CI run will show what's wrong"              | Reproduce locally in the runner's container first |
+| "Run the job a third time"                            | Add stage reuse or a no-CI script first           |
+| "The cause is probably X" (not reproduced)            | Relay it as a hypothesis; don't redesign on it    |
+| "Merge with `--delete-branch` to tidy up"             | Merge plain; delete the branch at cleanup         |
+| "The user can wait while the slot is lent out"        | Move it back to their session before they act     |
