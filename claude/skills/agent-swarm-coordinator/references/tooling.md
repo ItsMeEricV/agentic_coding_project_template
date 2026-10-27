@@ -61,6 +61,34 @@ cmux read-screen --workspace <ref> --lines 40
 
 Quote the prompt to the user and point them at that session's terminal (or Remote Control). You can't answer for them.
 
+## Liveness
+
+A session's "running" is a claim to verify. Match processes to a worktree by working directory:
+
+```bash
+wt=<worktree path>
+for pid in $(pgrep -f 'vitest|jest|pytest|playwright|tsc|next build|docker build'); do
+  lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | rg -q "^n$wt(/|$)" && ps -o pid=,etime=,command= -p "$pid"
+done
+claude agents                      # a subagent listed busy; or check subagents/*.jsonl mtimes (above)
+gh run list --branch <branch> --status in_progress
+```
+
+No match, no busy subagent, no run in progress: the work died. Tell the session to rerun it in the foreground and report.
+
+A screen is stalled when it is byte-identical to the last heartbeat's and the transcript shows no wait on the user, a peer, a run, or the lock. Hash it each heartbeat and compare:
+
+```bash
+cmux read-screen --workspace <ref> --lines 40 | shasum | cut -d' ' -f1
+```
+
+An exited session: `cmux list-workspaces` shows the workspace but `ps -axo command= | rg 'claude.*<title>'` finds no agent process. Resume it in place, then send the brief:
+
+```bash
+cmux send --workspace <ref> "cd <worktree> && claude --resume"
+cmux send-key --workspace <ref> Enter
+```
+
 ## Heavy lock
 
 The lock directory holds its holder's pid and start time, so a crashed holder is detectable:

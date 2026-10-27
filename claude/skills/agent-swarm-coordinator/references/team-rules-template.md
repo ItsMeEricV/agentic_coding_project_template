@@ -48,7 +48,7 @@ Marking the PR ready and merging happen only on <the user's / the coordinator's>
 ## Shared machine
 
 - Heavy runs (<list>) take the lock first: `until mkdir /tmp/<project>-heavy.lock 2>/dev/null; do sleep 15; done; echo "$$ $(ps -o lstart= -p $$ | xargs)" > /tmp/<project>-heavy.lock/holder`, and release it (`rm -f` the holder file, then `rmdir`) when the run ends, pass or fail.
-- Run tests in the foreground. If a run would pass the tool timeout, split it.
+- Run a test you wait on in the foreground; if it would pass the tool timeout, split it. Run one in the background only with a completion notice you act on. Report "running" only with the process or run id.
 - <Shared resources: who may touch them, ask the coordinator before <commands>, and how to free one when done.>
 - Never `cd` into another worktree; read it with `git -C <path>`.
 

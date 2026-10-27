@@ -162,6 +162,20 @@
         "merge.md says the branch is deleted later, in the session's cleanup, and why",
         "No merge is run"
       ]
+    },
+    {
+      "id": 12,
+      "name": "claimed-run-has-no-process",
+      "prompt": "Ticket 43's session has been idle for 40 minutes. Its last message says: \"Rerun is going in the background, I'll report when it finishes.\" Its worktree is a sibling checkout; no test, build, or CI process has that worktree as its working directory, its subagent is not listed busy, and no remote run is in progress. Handle it. Do not message the session or send keys to its terminal. Write your finding and the message you would send to reply.md in the output directory.",
+      "expected_output": "Treats \"running\" as a claim, looks for the process by worktree working directory, a busy subagent, or a remote run, finds none, concludes the work died silently, and tells the session to rerun in the foreground and report.",
+      "files": [],
+      "assertions": [
+        "Looks for a process whose working directory is in the session's worktree (lsof or equivalent), a busy subagent, or a remote run before accepting the claim",
+        "reply.md concludes the work died silently, not that it is still running",
+        "reply.md's message tells the session to rerun in the foreground and report",
+        "Does not wait for the session to report on its own or debug the code",
+        "No message is sent and no keys are sent to the session's terminal"
+      ]
     }
   ]
 }
