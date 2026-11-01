@@ -628,6 +628,10 @@ class ReviewPrRefusalTests(unittest.TestCase):
         calls = self._review(_openrouter_payload('{"summary": "trunc', "length"))
         self.assertFalse([c for c in calls if c[:2] == ["gh", "api"]])
 
+    def test_non_json_reply_posts_nothing(self):
+        calls = self._review(_openrouter_payload("Looks fine to me.", "stop"))
+        self.assertFalse([c for c in calls if c[:2] == ["gh", "api"]])
+
 
 class _RecordingOpenRouter(_CannedOpenRouter):
     def call_api(self, request_body):
