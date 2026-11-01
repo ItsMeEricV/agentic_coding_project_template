@@ -129,8 +129,9 @@ Exit codes:
      earn: no pass yet, PR head moved, no nomination under 150K tokens, or
      three slices already ran
   5  the model's reply was empty, or it stopped on its output budget, a
-     content filter, or a provider error; nothing is posted or saved, and
-     stderr carries the stop reason, token usage, and generation id
+     content filter, or a provider error, or (--pr) it was not valid JSON;
+     nothing is posted or saved, and stderr carries the stop reason, token
+     usage, and generation id (and the raw reply, when it was not JSON)
 """
 
 from __future__ import annotations
@@ -342,7 +343,7 @@ class SliceGateError(Exception):
 
 
 class IncompleteReplyError(Exception):
-    """An empty or cut-off model reply, refused before it is posted. main() exits 5."""
+    """An empty, cut-off, or (--pr) non-JSON model reply, refused before it is posted. main() exits 5."""
 
 
 MAX_FOCUS_AREAS: int = 3
@@ -2314,13 +2315,9 @@ def review_pr(
         if clean.endswith("```"):
             clean = clean.rsplit("```", 1)[0]
         review = json.loads(clean.strip())
-    except json.JSONDecodeError:
-        print("Response not valid JSON, posting as summary:", file=sys.stderr)
+    except json.JSONDecodeError as exc:
         print(text, file=sys.stderr)
-        if dry_run:
-            return
-        post_pr_review(pr_number, text, [], attribution=adapter.entry.tag)
-        return
+        raise IncompleteReplyError(f"the model's reply is not valid JSON: {reply.describe()}") from exc
 
     summary = review.get("summary", "No summary provided.")
     comments = review.get("comments", [])

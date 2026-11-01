@@ -23,7 +23,7 @@ Dedupe candidates by file overlap.
 
 ## Running one
 
-Phrase the invariant as something that can hold: the reviewer is told that "holds" and "unsettled" are complete answers. Use `--dry-run` to read the slice before any of it reaches the PR.
+Phrase the invariant as something that can hold: the reviewer is told that "holds" and "unsettled" are complete answers. Run it with `--dry-run` so nothing reaches the PR, then relay its findings yourself; never re-run a slice just to post it, which pays for the same review twice.
 
 ```bash
 uv run cli/agent_code_reviewer.py --pr 67 \
