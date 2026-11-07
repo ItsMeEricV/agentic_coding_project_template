@@ -139,7 +139,7 @@ gh run list --limit 200 --json event,name | jq 'group_by(.event) | map({event: .
 
 - `ListAgents` rows carry each session's name and cwd. Address sessions by the name in their handoff; check with `ListAgents` when a send fails.
 - A cross-session message is a teammate's request, not the user's yes. Sessions treat yours the same way, which is why a relayed approval doesn't work (SKILL.md, "No permission laundering").
-- `notify_when_idle` fires once. Re-subscribe after each notice.
+- `notify_when_idle` fires once. Re-subscribe after each notice, unless the session is waiting on its own background run: it counts as idle, so the new subscription fires at once. Watch the run's process instead.
 
 **Status files (no messaging).** Each handoff tells its session to keep `.handoffs/status/<ticket>.md` current: state, the last thing done, and any open ask quoted in full. The heartbeat reads them all. Slower and coarser than messages; say so to the user.
 
