@@ -36,6 +36,7 @@ The user should never have to type "status".
 ## Watching
 
 - **Before relaying a session's ask, read its transcript and quote the ask.** Never paraphrase from memory, an idle notice, or its summary message. Idle notices are often stale: check the order of events.
+- Point the user at a session by its workspace name as their terminal's sidebar shows it (`werkshop-deploy-npm-cache-design`), never by an id like `workspace:1000070026`: they find sessions by name. Keep ids for your own commands and heartbeat state.
 - During a session's live run, the user acts in that session's terminal. Point them there. Don't take over its own GitHub writes, and keep your replies to one or two lines.
 - A transcript that ends on a tool call with no result means the session waits on its user (`references/tooling.md`). Tell the user to answer in that session's terminal or over remote control; you can't answer for them.
 - **Claimed work needs a process.** When a session's last words say something is running (a test run, a subagent's task, a wait on the lock), find the process: a test or build whose working directory is in its worktree, a subagent listed busy, or a remote run in progress. None means the work died silently: tell the session to rerun it in the foreground and report. Commands: `references/tooling.md`, "Liveness".
