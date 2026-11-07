@@ -36,10 +36,11 @@ The user should never have to type "status".
 ## Watching
 
 - **Before relaying a session's ask, read its transcript and quote the ask.** Never paraphrase from memory, an idle notice, or its summary message. Idle notices are often stale: check the order of events.
-- Point the user at a session by its workspace name as their terminal's sidebar shows it (`werkshop-deploy-npm-cache-design`), never by an id like `workspace:1000070026`: they find sessions by name. Keep ids for your own commands and heartbeat state.
+- Point the user at a session by its workspace name as their terminal's sidebar shows it (`myapp-search-api`), never by an id like `workspace:1000070026`: they find sessions by name. Keep ids for your own commands and heartbeat state.
 - During a session's live run, the user acts in that session's terminal. Point them there. Don't take over its own GitHub writes, and keep your replies to one or two lines.
 - A transcript that ends on a tool call with no result means the session waits on its user (`references/tooling.md`). Tell the user to answer in that session's terminal or over remote control; you can't answer for them.
 - **Claimed work needs a process.** When a session's last words say something is running (a test run, a subagent's task, a wait on the lock), find the process: a test or build whose working directory is in its worktree, a subagent listed busy, or a remote run in progress. None means the work died silently: tell the session to rerun it in the foreground and report. Commands: `references/tooling.md`, "Liveness".
+- **A session waiting on its own background run counts as idle,** so a new idle subscription fires at once and re-subscribing loops. Find the run's process instead, and wait for the session's message or the heartbeat.
 - **Unchanged and not waiting means stalled.** A screen unchanged since the last heartbeat, and not waiting on the user, a peer, a remote run, or the lock, gets a nudge with the next step from its plan. Check subagent transcript mtimes and wake logs (a sleeping machine looks stalled) before debugging code.
 - **Resume exited sessions.** A workspace with no agent process left gets `claude --resume` in its worktree and a one-line brief of where it stopped.
 - Report only what changed: result first, then 2–4 bullets; one line when nothing changed. When everything waits on the user, slow the heartbeat to ~2 h.
@@ -89,7 +90,9 @@ Commands: `references/tooling.md`, "Remote runs".
 - Only one heavy run (full check, integration tier, image build) at a time, through a lock, not a load check: every session sees "low load" and starts at once. `until mkdir /tmp/<project>-heavy.lock 2>/dev/null; do sleep 15; done`, released when the run ends, pass or fail. The project lists which commands count as heavy.
 - **A lock needs a live holder.** It records its holder's pid and start time; the heartbeat clears a lock whose holder process is gone and tells the holder. Implementer briefs say "lint and test only the packages you touch". Find a load spike's source by each heavy process's working directory. Commands: `references/tooling.md`, "Heavy lock".
 - Implementers run a test they wait on in the foreground, or in the background only with a completion notice they act on (a background run doesn't wake a subagent), and report "running" only with the process or run id.
-- A single-profile resource (a signed-in automation browser, the local app stack, a shared daemon) has one owner at a time. You assign it; the holder frees it when done and tells you. A move between sessions never needs a manual step from the user. When the user returns to a live check, move the resource back to that check's session before they act; a slot lent elsewhere meets their action with the wrong build.
+- A single-profile resource (a signed-in automation browser, the local app stack, a shared daemon) has one owner at a time. You assign it; the holder frees it when done and tells you. A move between sessions never needs a manual step from the user. When the user returns to a live check, move the resource back to that check's session before they act; a slot lent elsewhere meets their action with the wrong build. Never assume the user is away: before lending a resource, read its holder's transcript for a check the user is doing live.
+- **Before moving a shared resource, list what it serves for others:** an old build's worker that pinned sessions still need, a sidecar a live session uses. A teardown by project name removes those too. After the move, check that each one is served again.
+- **Watch the disk floor on the heartbeat:** the container VM's free disk against the project's floor. Reclaim images no container uses and build-cache layers, but keep package-cache mounts (they keep rebuilds fast) and never prune volumes (they hold data).
 - Idle sessions hold 150–400 MB each with their MCP servers. Close finished ones.
 - A process "hung" during a long idle may be the machine asleep. Say so before debugging code.
 
@@ -98,13 +101,13 @@ Commands: `references/tooling.md`, "Remote runs".
 Commands for every step: `references/worktrees.md`.
 
 - **Start:** a ticket worktree is cut from `origin/main` at the path and branch name the project's coordination doc sets (default: a sibling of the main checkout, `<repo>-<topic>`, on a branch with the user's prefix, e.g. `ev-<topic>`). Subagent worktrees (the Agent tool's `isolation: "worktree"`, under `.claude/worktrees/`) are temporary: they exist for one task.
-- **Cap:** the project doc sets the live caps for the machine: ticket sessions, and subagent worktrees per session (default 3). Don't launch past them; queue the ticket.
+- **Cap:** the project doc sets the live caps for the machine: ticket sessions, and subagent worktrees per session (default 3). Don't launch past them; queue the ticket. Count the live sessions before every launch batch, idle ones waiting on the user included. The user's "start these" doesn't lift the cap: queue the extras, and say so.
 - **Keep tools out:** every lint, test, typecheck, and format config ignores `.claude/` and sibling worktrees. Otherwise a check in the main checkout walks into every subagent's copy and runs out of memory.
 - **Avoid a full install per subagent worktree** with Claude Code's `worktree.symlinkDirectories` setting when the project's dependency layout allows it (`references/worktrees.md` has the caveats).
 - **Clean up as you go:**
   - The ticket session removes each subagent worktree once that task's branch is merged into the ticket branch.
   - You remove a ticket worktree once its PR merged and its session stood down: `git worktree remove <path>`, only when clean, never `--force` or a glob. Removing a clean worktree keeps its branch and commits.
-  - Merged branches go with `git branch -d`; `-D` (unmerged) only with the user's yes.
+  - Cleanup is yours: do it, never hand the user a cleanup script. A branch `git cherry` shows with no `+` line holds nothing main lacks, so delete it: `git branch -d`, or `-D` when a squash or rebase merge makes `-d` refuse, and `git push origin --delete` for its remote. Only a branch with `+` lines (work main lacks) goes to the user, with its commit count.
 - **Sweep on the heartbeat:** list worktrees, check each for clean / merged / unpushed commits (`git cherry`), remove what's safe, and report the rest with the reason it stays.
 
 ## Merges
@@ -126,6 +129,7 @@ Commands for every step: `references/worktrees.md`.
 
 - When a ticket is done: its session stands down, its workspace is closed, finished subagents are shut down, and its worktree goes per Worktrees.
 - Save a memory for each new user rule or correction, with **Why:** and **How to apply:**. A rule for every ticket session also goes into the team-rules doc; a rule for the coordinator goes into the coordination doc. Handing the role to a new session: `references/handoff-templates.md`, "Coordinator succession".
+- A skill symlinked in from another repo is that repo's checkout. Change it on a branch with a PR there, never in place on its default branch.
 
 ## Red flags
 
@@ -147,3 +151,6 @@ Commands for every step: `references/worktrees.md`.
 | "The cause is probably X" (not reproduced)            | Relay it as a hypothesis; don't redesign on it    |
 | "Merge with `--delete-branch` to tidy up"             | Merge plain; delete the branch at cleanup         |
 | "The user can wait while the slot is lent out"        | Move it back to their session before they act     |
+| "I'll give the user a cleanup script"                 | `git cherry` shows no `+`: delete it yourself     |
+| "The user said start all of them"                     | Count live sessions; queue past the cap           |
+| "The stack moved; the old holder's extras are fine"   | List what it served; check each runs again        |
