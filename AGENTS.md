@@ -128,6 +128,13 @@ Declared here so the `pull-request-creator` skill's **What to Watch** block (rea
 - **Deploy alerts:** _not declared — inherits user-level default_
 - **Observability sources:** _not declared — inherits user-level default_
 
+### Issues
+
+This section tells the `issue-writer` skill which tracker to use, how an agent checks a change before merge, and any criteria specific to this project. Each criterion line becomes an acceptance criterion on every issue (`Spans:`, `Axiom logging:`, …).
+
+- **Tracker:** _not declared, so the git remote's GitHub repo is used_ (`github <owner/repo>`, `linear <team>`, or `jira <project key>`)
+- **Agent validation:** _not declared_ (where an agent runs the change before merge: a browser on the local stack, a preview URL, the real service)
+
 ### Inter-Agent Communication
 
 - **Handovers across sessions or agents:** Use the agent's own planning mode for multi-step work, and the `handoff` skill when a task outruns one session or hits a blocker needing another agent's expertise. Do not commit a plan or handoff markdown file to the repo — plans go stale the moment the approach changes, and a stale committed plan misleads every agent that reads it. Work that must outlive the handoff belongs in the task tracker, not in a file. When the work is too big to plan in one session at all, invoke the `wayfinder` skill: it charts the effort as a map of decision tickets on GitHub Issues and resolves one per session. When several sessions work tickets in parallel, one coordinating session runs them with the `agent-swarm-coordinator` skill plus the project's `docs/coordination/` docs.
