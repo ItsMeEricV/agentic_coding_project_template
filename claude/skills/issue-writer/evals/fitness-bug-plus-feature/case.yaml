@@ -1,0 +1,4 @@
+schema_version: '1.1'
+name: fitness-bug-plus-feature
+expected_outcome: |
+  Checks main first and reports any merged PR that already covers part of the report; splits the bug from the join-button feature (or justifies one issue); each draft follows the shape with an Axiom logging item and a movata.local agent validation item; nothing is created.

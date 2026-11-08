@@ -1,0 +1,4 @@
+schema_version: '1.1'
+name: werkshop-step-run-cost
+expected_outcome: |
+  One draft in the shape with code pointers from the werkshop repo, a Spans item, and an agent validation item on the local stack; nothing created.

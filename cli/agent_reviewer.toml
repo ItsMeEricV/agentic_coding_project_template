@@ -16,7 +16,7 @@ default = "codex-sol"
 # (`claude-opus-5.5` -> `claude-opus-6`), or a family no entry uses from a
 # vendor below (`gemini-4-argon` beside `gemini-3.1-pro`). Decide, then move
 # the date; declining counts.
-catalog_reviewed = 2026-10-20
+catalog_reviewed = 2026-11-08
 
 # Each entry declares:
 #   key            short slug passed to --model; also names the entry's history
