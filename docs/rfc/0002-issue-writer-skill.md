@@ -8,14 +8,18 @@ Issues in werkshop and fitness_tracker share no shape. Headings vary (`Problem.`
 
 **A skill, not a script.** Writing the body is judgment work: what the problem is, what's out of scope, which criteria can be checked. A script can't do that. The only tracker-specific step is one create call, and agents already have a tool for each tracker (`gh`, Linear's MCP, Atlassian's MCP). A script would need its own login for each tracker, which means new tokens or env vars. The checks in "Self-check" are mechanical enough that the skill can run them. If drafts drift anyway, they can become a small lint script later.
 
-**One generic skill, with each project's criteria in its `AGENTS.md`.** This copies the `pull-request-creator` split. The skill holds the shape, the limits, the self-check, and the shared criterion. Each project's `AGENTS.md` gets an `## Issues` section naming its tracker, its title convention, how to run the agent validation, and its own criteria. A per-project copy of the skill was considered and rejected: copies drift, and a fix to the shape would have to be made in every repo. A project that needs nothing extra declares only its tracker.
+**One generic skill, with each project's criteria in its `AGENTS.md`.** This copies the `pull-request-creator` split. The skill holds the shape, the limits, the self-check, and the shared criterion. Each project's `AGENTS.md` gets an `## Issues` section naming its tracker, how to run the agent validation, and its own criteria. A per-project copy of the skill was considered and rejected: copies drift, and a fix to the shape would have to be made in every repo. A project that needs nothing extra declares only its tracker.
 
-**The skill drafts. A person says "yes, open it".** The skill shows the title and body, then creates the issue only after the user's explicit yes, as the global rules require. Rewriting an issue the user pointed at doesn't need a second yes.
+**The skill drafts. A person says "yes, open it".** The skill shows the title and body, then creates the issue only after the user's explicit yes, as the global rules require.
+
+**Rewrites happen only on request, after a before/after.** If the user asks for issue N to be rewritten, the skill shows a short before/after diff of the body and updates the issue on the user's yes. It never reformats issues on its own.
+
+**One title format: `<Area>: <outcome>`, at most 70 characters.** A project can override it with a `Titles:` line in its `## Issues` section.
 
 ## The shape
 
 ```markdown
-<title: the outcome, ≤ 70 chars; the project's prefix convention applies>
+<Area>: <outcome>
 
 **Problem.** 1–3 sentences: what's wrong or missing, who sees it, why now.
 
@@ -49,7 +53,7 @@ werkshop `AGENTS.md`:
 ```markdown
 ## Issues
 
-- **Tracker:** github `ItsMeEricV/werkshop`. Titles: `<Area>: <outcome>`.
+- **Tracker:** github `ItsMeEricV/werkshop`.
 - **Agent validation:** on the local stack (`pnpm bootstrap:dev`), drive the change through web
   in a browser (`chrome-werkshop` MCP) or start a real session; a lane change is checked on preview.
 - **Spans:** a new step, workflow path, external call, or edge says which spans and attributes it
@@ -61,7 +65,7 @@ fitness_tracker `AGENTS.md`:
 ```markdown
 ## Issues
 
-- **Tracker:** github `ItsMeEricV/fitness_tracker`. Titles: `[Area] <outcome>`.
+- **Tracker:** github `ItsMeEricV/fitness_tracker`.
 - **Agent validation:** in a browser on `movata.local:$WEB_PORT` with the dev login
   (see "Dev browser login"), via `cmux:browser`; subdomain changes also on `<slug>.movata.local`.
 - **Axiom logging:** a new server path or failure mode logs through `@/lib/logger` with
@@ -114,7 +118,7 @@ Links: blocks #469
 
 ## Self-check (the skill runs this on its own draft before showing it)
 
-1. Every section is within its cap, and the body is ≤ 250 words.
+1. The title follows the format (the default or the project's override) and is ≤ 70 characters. Every section is within its cap, and the body is ≤ 250 words.
 2. Every acceptance criterion is a `- [ ]` item that names something observable: a page state, a command's output, a test that fails when the fix is reverted. Items like "works correctly", "handles edge cases", or "is robust" fail the check.
 3. Each criterion from the project's `## Issues` section has an item or an `n/a, <reason>`.
 4. The agent validation item names a place (a URL, a lane, or a service) and what is observed.
@@ -127,8 +131,3 @@ Any failure means the skill fixes the draft before showing it.
 - `claude/skills/issue-writer/SKILL.md` (shape, self-check, flow) and `references/trackers.md`.
 - An `## Issues` placeholder in this template's `AGENTS.md`, next to What to Watch.
 - The two project sections above, one PR in each repo.
-
-## Open questions for the user
-
-- Title prefix: keep each project's own convention, or one format everywhere?
-- Should the skill also rewrite existing open issues into the shape when asked, or only write new ones?
