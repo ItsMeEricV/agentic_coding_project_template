@@ -57,7 +57,7 @@ werkshop `AGENTS.md`:
 - **Agent validation:** on the local stack (`pnpm bootstrap:dev`), drive the change through web
   in a browser (`chrome-werkshop` MCP) or start a real session; a lane change is checked on preview.
 - **Spans:** a new step, workflow path, external call, or edge says which spans and attributes it
-  adds from RFC 0022's vocabulary (§3), through the telemetry door, or "no new spans: <reason>".
+  adds from RFC 0022's vocabulary (§3), through the telemetry door, or `Spans: n/a, <reason>`.
 ```
 
 fitness_tracker `AGENTS.md`:
@@ -69,7 +69,7 @@ fitness_tracker `AGENTS.md`:
 - **Agent validation:** in a browser on `movata.local:$WEB_PORT` with the dev login
   (see "Dev browser login"), via `cmux:browser`; subdomain changes also on `<slug>.movata.local`.
 - **Axiom logging:** a new server path or failure mode logs through `@/lib/logger` with
-  fields queryable in `palaestra-logs` (units in latency names), or "no new logs: <reason>".
+  fields queryable in `palaestra-logs` (units in latency names), or `Axiom logging: n/a, <reason>`.
 ```
 
 ## Trackers: one body, a different create step
