@@ -1,0 +1,4 @@
+schema_version: '1.1'
+name: template-no-issues-section
+expected_outcome: |
+  One draft targeting the git remote GitHub repo (no tracker declared), with agent validation that runs the CLI and reads its output; nothing created.
