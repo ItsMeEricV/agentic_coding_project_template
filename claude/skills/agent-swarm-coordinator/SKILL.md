@@ -25,7 +25,7 @@ The user should never have to type "status".
 
 ## Launching a session
 
-- One ticket gets one branch, one worktree (see Worktrees), and one terminal workspace, started with a handoff file as its only prompt. Handoff shapes: `references/handoff-templates.md`. Handoffs live in a gitignored folder (the `handoff` skill's `.handoffs/`), never in a commit.
+- One ticket gets one branch, one worktree (see Worktrees), and one terminal workspace, started with a handoff file as its only prompt. With a worktree-aware terminal (Supacode, herdr), create the worktree through that tool so the ticket gets its own sidebar entry and its own panes, and start the session there. Never stack ticket sessions as tabs in the coordinator's own worktree: they hide from the user and outlive the worktrees they ran in (`references/tooling.md`, Launching). Handoff shapes: `references/handoff-templates.md`. Handoffs live in a gitignored folder (the `handoff` skill's `.handoffs/`), never in a commit.
 - A handoff names: worktree, branch, base commit, the plan or scope, the team-rules file, what needs the coordinator, what needs the user, and when to message you. It points at skills and docs by path; **it never paraphrases a skill's mechanics**, because a stale summary outlives the skill it summarized.
 - Acceptance and dogfood items are small and fully specified: write the edge cases into the item before a paid run, or an automated reviewer flips between two fixes.
 - Planning and execution are separate sessions. Planning runs at the higher effort; execution one step lower. Planners split any task expected to run over ~45 min.

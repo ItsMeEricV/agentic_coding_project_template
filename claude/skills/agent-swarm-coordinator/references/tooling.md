@@ -4,7 +4,7 @@ SKILL.md says what to do; this file says which tool does it and what replaces a 
 
 | Job                                    | Tool                                   | Without it                                                                                            |
 | -------------------------------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| Open a terminal per session            | cmux                                   | `claude --bg` (background session), tmux, or the user pastes your launch command                      |
+| Open a terminal per session            | cmux, Supacode, herdr                  | `claude --bg` (background session), tmux, or the user pastes your launch command                      |
 | See live sessions                      | `ListAgents`                           | a status file per ticket (below)                                                                      |
 | Message a session                      | `SendMessage`                          | type into its terminal (`cmux send` / `tmux send-keys`), or a status file                             |
 | Know when a session idles              | `SendMessage … notify_when_idle: true` | heartbeat only                                                                                        |
@@ -14,6 +14,24 @@ SKILL.md says what to do; this file says which tool does it and what replaces a 
 | Keep sessions in their own worktree    | worktree-boundary hook                 | the same rule, held by discipline                                                                     |
 
 ## Launching
+
+Every ticket session gets its own place in the user's terminal: a cmux workspace, or, in a worktree-aware terminal (Supacode, herdr), its own worktree entry with its own panes. Never open a ticket session as a new tab in the coordinator's worktree: the user can't tell sessions apart in one tab strip, and those tabs survive their worktree's removal as shells in a deleted directory.
+
+With Supacode (prefer its CLI; `supacode://` deeplinks only where the CLI is not installed):
+
+```bash
+WT=$(supacode repo worktree-new -r <repo id> --branch <branch> --base origin/main --fetch \
+  --name <workspace name> --background)
+TAB=$(supacode tab new -w "$WT" --background --title "<workspace name>" \
+  -i "claude --model <model> --effort <effort> --remote-control")
+```
+
+- Capture every id that `worktree-new`, `tab new`, and `pane split` print: an omitted `-w`/`-t` means whatever the user has focused.
+- The worktree shows in Supacode's sidebar under its own name, with its own pane; the session runs there, not in the coordinator's tab strip.
+- Send the brief with `SendMessage` once the session's `ListAgents` row appears: Supacode has no send-text.
+- Close a finished one: close its tabs (`supacode tab list -w "$WT"`, then `tab close`), then `supacode worktree archive -w "$WT" --background`. Deleting the worktree from disk is the user's call.
+
+With herdr, or another worktree-aware terminal: the same shape through its own CLI (check `--help` first): create the worktree through it, then start the session in that worktree's pane.
 
 With cmux:
 
