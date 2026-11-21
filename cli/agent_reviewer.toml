@@ -16,7 +16,7 @@ default = "codex-sol"
 # (`claude-opus-5.5` -> `claude-opus-6`), or a family no entry uses from a
 # vendor below (`gemini-4-argon` beside `gemini-3.1-pro`). Decide, then move
 # the date; declining counts.
-catalog_reviewed = 2026-11-08
+catalog_reviewed = 2026-11-21
 
 # Each entry declares:
 #   key            short slug passed to --model; also names the entry's history
@@ -51,20 +51,20 @@ catalog_reviewed = 2026-11-08
 # not as the everyday default.
 [[models]]
 key = "codex-astra"
-name = "Codex GPT-6 Astra — OpenRouter"
+name = "Codex GPT-6.2 Astra — OpenRouter"
 access_method = "openrouter"
-id = "openai/gpt-6-astra"
+id = "openai/gpt-6.2-astra"
 context_window = 1_050_000
 tag = "CODEX"
 
 [[models]]
 key = "codex-sol"
-name = "Codex GPT-6.1 Sol — OpenRouter"
+name = "Codex GPT-6.2 Sol — OpenRouter"
 access_method = "openrouter"
-id = "openai/gpt-6.1-sol"
+id = "openai/gpt-6.2-sol"
 context_window = 1_050_000
-# The published cap: "max_completion_tokens": 128000 on
-# https://openrouter.ai/openai/gpt-6.1-sol, checked 2026-10-22.
+# The published cap: MAX OUT 128K for openai/gpt-6.2-sol in OpenRouter's
+# catalog (--find-model), checked 2026-11-21.
 max_output_tokens = 128_000
 tag = "CODEX"
 
@@ -74,6 +74,30 @@ name = "Gemini 4 Argon — Google API"
 access_method = "gemini_api"
 id = "gemini-4-argon"
 context_window = 1_048_576
+tag = "GEMINI"
+
+[[models]]
+key = "gemini-neon"
+name = "Gemini 4 Neon — OpenRouter"
+access_method = "openrouter"
+id = "google/gemini-4-neon"
+context_window = 1_050_000
+tag = "GEMINI"
+
+[[models]]
+key = "gemini-carbon"
+name = "Gemini 4 Carbon — OpenRouter"
+access_method = "openrouter"
+id = "google/gemini-4-carbon"
+context_window = 1_050_000
+tag = "GEMINI"
+
+[[models]]
+key = "gemini-hydrogen"
+name = "Gemini 4 Hydrogen — OpenRouter"
+access_method = "openrouter"
+id = "google/gemini-4-hydrogen"
+context_window = 1_050_000
 tag = "GEMINI"
 
 [[models]]
