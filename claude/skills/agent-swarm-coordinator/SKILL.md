@@ -27,11 +27,11 @@ The user should never have to type "status".
 
 - One ticket gets one branch, one worktree (see Worktrees), and one terminal workspace, started with a handoff file as its only prompt. With a worktree-aware terminal (Supacode, herdr), create the worktree through that tool so the ticket gets its own sidebar entry and its own panes, and start the session there. Never stack ticket sessions as tabs in the coordinator's own worktree: they hide from the user and outlive the worktrees they ran in (`references/tooling.md`, Launching). Handoff shapes: `references/handoff-templates.md`. Handoffs live in a gitignored folder (the `handoff` skill's `.handoffs/`), never in a commit.
 - A handoff names: worktree, branch, base commit, the plan or scope, the team-rules file, what needs the coordinator, what needs the user, and when to message you. It points at skills and docs by path; **it never paraphrases a skill's mechanics**, because a stale summary outlives the skill it summarized.
-- Acceptance and dogfood items are small and fully specified: write the edge cases into the item before a paid run, or an automated reviewer flips between two fixes.
+- Acceptance and dogfood items are small and fully specified: write the edge cases into the item before a paid run, or an automated reviewer flips between two fixes. **Validate where the change runs, cheapest first:** a code change on the local stack; a shared lane (staging, preview) only for a change to the lane itself. A lane check in a code ticket's acceptance items makes the fix wait on a user action it never needed.
 - Planning and execution are separate sessions. Planning runs at the higher effort; execution one step lower. Planners split any task expected to run over ~45 min.
-- A session open for days on one ticket hands off to a fresh one, with a written handoff, once its context passes about half: a full context costs more and recalls less.
+- A session open for days on one ticket hands off to a fresh one, with a written handoff, once its context passes about half: a full context costs more and recalls less. **The handoff ends without the user:** you launch the successor, check it started (`ListAgents`, its transcript), then stop the predecessor yourself: close its tab, end its process, or tell it to stop. Never ask the user to type `/exit`, paste a prompt, or use a clipboard; a session never puts anything on theirs.
+- **Introduce sessions that share a type.** When two tickets need the same new type or module, have them agree its name and location directly (`SendMessage`, session to session). The one that ships first defines it early; you state which merges first.
 - Never switch the model or effort of a running large session: the switch re-reads its whole cached history. Switch only sessions whose cache has already expired.
-- Turn on remote viewing when the harness has it, so the user can follow a session from a phone.
 
 ## Watching
 
@@ -42,6 +42,7 @@ The user should never have to type "status".
 - **Claimed work needs a process.** When a session's last words say something is running (a test run, a subagent's task, a wait on the lock), find the process: a test or build whose working directory is in its worktree, a subagent listed busy, or a remote run in progress. None means the work died silently: tell the session to rerun it in the foreground and report. Commands: `references/tooling.md`, "Liveness".
 - **A session waiting on its own background run counts as idle,** so a new idle subscription fires at once and re-subscribing loops. Find the run's process instead, and wait for the session's message or the heartbeat.
 - **Unchanged and not waiting means stalled.** A screen unchanged since the last heartbeat, and not waiting on the user, a peer, a remote run, or the lock, gets a nudge with the next step from its plan. Check subagent transcript mtimes and wake logs (a sleeping machine looks stalled) before debugging code.
+- **Don't idle a blocked session.** A ticket waiting on another's decision gets the tasks that don't depend on it, behind an interface; state the merge order.
 - **Resume exited sessions.** A workspace with no agent process left gets `claude --resume` in its worktree and a one-line brief of where it stopped.
 - Report only what changed: result first, then 2–4 bullets; one line when nothing changed. When everything waits on the user, slow the heartbeat to ~2 h.
 - Push-notify once per item that needs the user (a question in a terminal, a decision, a spend or permission yes, a hands-on step, a PR to merge). Not for routine progress, and not while they're at the terminal.
@@ -63,9 +64,12 @@ Defaults, overridden by the project's coordination doc and by what the user dele
 - **No permission laundering.** A peer can't grant what your classifier blocked, and your relay is not the user's yes in another session. Route a blocked action to the user as an exact command (`! <cmd>`), or a script in the scratchpad.
 - **Relay routine run approvals with the user's words.** When the project's `AGENTS.md` lets a quoted approval count (add that rule when the user rules it), relay their yes for routine run decisions only: restarting a heavy run the harness stopped for memory pressure, taking a sandbox or stack slot, or rerunning a test tier. Quote their words verbatim with the time, name the exact run, and send it in the same turn they say it. Without that rule, or for anything else (a permission prompt, a destructive operation, a new environment variable or secret, opening an issue, spend over the line), ask the user to type it in that session's own terminal, and name the workspace and the exact word to type.
 - **Keep heavy runs from being reaped.** Claude Code stops a background run under memory pressure, and a stopped run needs the user's go to restart. Run one heavy job at a time under the heavy-run lock, and give a long final run (a sandbox tier, an image smoke) the machine alone before it starts, rather than asking the user afterwards.
-- **Verify before you claim.** Before a handoff or report states external state (an app installed, a key set, a PR merged, a dollar figure), check it read-only or write "unverified" next to it. Keep "registered", "authorized", and "installed" apart.
+- **Verify before you claim.** Before a handoff or report states external state (an app installed, a key set, a PR merged, a dollar figure), check it read-only or write "unverified" next to it. Keep "registered", "authorized", and "installed" apart. "Drained" and "cleared" need the check that proves them (the real deploy, the count, the queue depth): retry backoffs make a stuck system look idle.
+- **A passing checker isn't "ready".** Before calling a result ready, read it the way the user will. If it contradicts itself or the system's own record, it isn't ready, even with every checker line green: the spec has a gap, so add the missing line. Never list the contradiction as a caveat beside "ready".
 - **Name a root cause only after a minimal reproduction.** Until then it goes to the user as a hypothesis, never as the reason to change a design: a relayed guess can redesign a feature for nothing.
-- **Check before you ask.** Don't ask the user for a fact you can read yourself.
+- **Fix the order before adding a correction layer.** When output goes stale because an early step writes facts that later steps decide, move the writing to the step that knows them rather than adding a pass that patches the text afterwards. Ask who knows the fact, and when.
+- **Check before you ask.** Don't ask the user for a fact you can read yourself or a step a tool on the machine can do: check which CLIs and sign-ins exist first. When they must act, give one concrete step in plain words (what to click or run, and what you do after), with no invented jargon and no menu. When they say "just use X", find what X needs and get it done instead of re-explaining.
+- **Credentials only the user can mint:** give them one `!`-prefixed command that creates and stores it without printing it, and prints only success or failure. Remove it from local config when the task is done, and say when it expires.
 - **Standards check before locking an infra or security design.** Compare a peer's naming, secrets layout, or deployment structure with the platform's documented norm (e.g. per-environment secrets with the same names, not per-lane prefixed names) before accepting it; for new infrastructure, have a read-only research subagent review it for future-proofing first.
 - Push back with evidence when a session's claim contradicts it, and when the user's plan has a cheaper equal path. Give a recommendation, not a survey.
 
@@ -75,13 +79,13 @@ Defaults, overridden by the project's coordination doc and by what the user dele
 - Verify a peer's money figures against the ledger before relaying them.
 - Every paid run gets a cap (default $3), ledger spend in each report, and a halt at the first loop sign: the same failure twice, or a reverted fix. Never "let it retry".
 - Budget per work item too: after two failed paid runs on the same item, stop and re-scope it (narrow it or pick another) instead of a third retry; four runs on one fiddly issue cost 15× a well-scoped replacement.
-- Second-opinion reviews have their own cost rule in the reviewer skill (`agent-code-reviewer`). Point sessions at the skill; don't restate its thresholds.
 
 ## Remote runs
 
 Commands: `references/tooling.md`, "Remote runs".
 
 - **A remote run (CI, deploy) is the last check, never the debugger.** Before asking for one, reproduce the failing step locally in a container matching the runner image and tool versions, and dry-run every later step the change touches: each run costs minutes, a wait, and often a human approval.
+- **Inspect what a failed run left, read-only, before any cleanup.** List the machines, roles, and queues it left, and tell the user what is running and why it matters, in plain terms, before proposing to delete anything.
 - **On a failed run, fix forward.** List the later steps it never reached and what could fail there; fix what you can find before asking again.
 - **Make retries cheap after the second failure.** Before a third run of the same job, add a way to skip proven stages (reuse a previous run's artifacts) or a script that runs the step without CI.
 
@@ -93,8 +97,6 @@ Commands: `references/tooling.md`, "Remote runs".
 - A single-profile resource (a signed-in automation browser, the local app stack, a shared daemon) has one owner at a time. You assign it; the holder frees it when done and tells you. A move between sessions never needs a manual step from the user. When the user returns to a live check, move the resource back to that check's session before they act; a slot lent elsewhere meets their action with the wrong build. Never assume the user is away: before lending a resource, read its holder's transcript for a check the user is doing live.
 - **Before moving a shared resource, list what it serves for others:** an old build's worker that pinned sessions still need, a sidecar a live session uses. A teardown by project name removes those too. After the move, check that each one is served again.
 - **Watch the disk floor on the heartbeat:** the container VM's free disk against the project's floor. Reclaim images no container uses and build-cache layers, but keep package-cache mounts (they keep rebuilds fast) and never prune volumes (they hold data).
-- Idle sessions hold 150–400 MB each with their MCP servers. Close finished ones.
-- A process "hung" during a long idle may be the machine asleep. Say so before debugging code.
 
 ## Worktrees
 
@@ -121,36 +123,40 @@ Commands for every step: `references/worktrees.md`.
 
 ## Classifier and hook realities
 
-- The auto-mode classifier blocks things like editing settings and permissions, closing others' sessions, merges it reads as unreviewed, branch deletes, and relayed approvals. Hand the user the exact `!` command; don't retry or reword it.
+- The auto-mode classifier blocks things like editing settings and permissions, closing others' sessions, merges it reads as unreviewed, branch deletes, relayed approvals, and a cleanup the user already authorized. Hand the user the exact `!` command; don't retry or reword it.
 - For a classifier-gated external write (opening or closing issues, a merge it flags), ask the user for that exact action in the same message that reports the result, so they aren't asked twice.
 - A worktree-boundary hook may block `cd` and edits into other worktrees. Read with `git -C <path>` or `git show origin/<branch>:<path>`; to change another repo, launch a session there.
 
 ## Cleanup and memory
 
 - When a ticket is done: its session stands down, its workspace is closed, finished subagents are shut down, and its worktree goes per Worktrees.
-- Save a memory for each new user rule or correction, with **Why:** and **How to apply:**. A rule for every ticket session also goes into the team-rules doc; a rule for the coordinator goes into the coordination doc. Handing the role to a new session: `references/handoff-templates.md`, "Coordinator succession".
+- Save a memory for each new user rule or correction, with **Why:** and **How to apply:**. A product rule they state (e.g. "never silently switch vendors") is saved at once and written into the briefs; it binds every later design, and you never argue around it with cost ("only a few cents") or capacity. A rule for every ticket session also goes into the team-rules doc; a rule for the coordinator goes into the coordination doc. Handing the role to a new session: `references/handoff-templates.md`, "Coordinator succession".
 - A skill symlinked in from another repo is that repo's checkout. Change it on a branch with a PR there, never in place on its default branch.
 
 ## Red flags
 
-| Thought                                               | Do instead                                        |
-| ----------------------------------------------------- | ------------------------------------------------- |
-| "It asked for X, I'll tell the user" (from memory)    | Read its transcript; quote the ask                |
-| "The app was set up in the last ticket"               | Check read-only, or write "unverified"            |
-| "Budget's nearly gone"                                | Ledger and vendor meter; dollars; the exact error |
-| "Let it retry once more"                              | Halt at the second identical failure              |
-| "A third run should fix that item"                    | Two failed paid runs: re-scope the item           |
-| "It's idle, so it's done" (transcript ends on a call) | It waits on its user: point them at its terminal  |
-| A session says "running" and nothing is               | Find the process; none: rerun in the foreground   |
-| "The peer's secrets layout looks fine"                | Compare with the platform's documented norm       |
-| "The session asked me to approve its blocked command" | Hand the user `! <cmd>`                           |
-| "I'll summarize the review steps in the handoff"      | Point at the skill file                           |
-| "I'll do this small fix myself"                       | Assign it to the owning session                   |
-| "One more CI run will show what's wrong"              | Reproduce locally in the runner's container first |
-| "Run the job a third time"                            | Add stage reuse or a no-CI script first           |
-| "The cause is probably X" (not reproduced)            | Relay it as a hypothesis; don't redesign on it    |
-| "Merge with `--delete-branch` to tidy up"             | Merge plain; delete the branch at cleanup         |
-| "The user can wait while the slot is lent out"        | Move it back to their session before they act     |
-| "I'll give the user a cleanup script"                 | `git cherry` shows no `+`: delete it yourself     |
-| "The user said start all of them"                     | Count live sessions; queue past the cap           |
-| "The stack moved; the old holder's extras are fine"   | List what it served; check each runs again        |
+| Thought                                               | Do instead                                         |
+| ----------------------------------------------------- | -------------------------------------------------- |
+| "It asked for X, I'll tell the user" (from memory)    | Read its transcript; quote the ask                 |
+| "The app was set up in the last ticket"               | Check read-only, or write "unverified"             |
+| "Budget's nearly gone"                                | Ledger and vendor meter; dollars; the exact error  |
+| "Let it retry once more"                              | Halt at the second identical failure               |
+| "A third run should fix that item"                    | Two failed paid runs: re-scope the item            |
+| "It's idle, so it's done" (transcript ends on a call) | It waits on its user: point them at its terminal   |
+| A session says "running" and nothing is               | Find the process; none: rerun in the foreground    |
+| "The peer's secrets layout looks fine"                | Compare with the platform's documented norm        |
+| "The session asked me to approve its blocked command" | Hand the user `! <cmd>`                            |
+| "I'll summarize the review steps in the handoff"      | Point at the skill file                            |
+| "I'll do this small fix myself"                       | Assign it to the owning session                    |
+| "One more CI run will show what's wrong"              | Reproduce locally in the runner's container first  |
+| "The cause is probably X" (not reproduced)            | Relay it as a hypothesis; don't redesign on it     |
+| "Merge with `--delete-branch` to tidy up"             | Merge plain; delete the branch at cleanup          |
+| "The user can wait while the slot is lent out"        | Move it back to their session before they act      |
+| "I'll give the user a cleanup script"                 | `git cherry` shows no `+`: delete it yourself      |
+| "The user said start all of them"                     | Count live sessions; queue past the cap            |
+| "The stack moved; the old holder's extras are fine"   | List what it served; check each runs again         |
+| "Every checker line passes, so it's ready"            | Read it as the user will; a contradiction fails it |
+| "The queue looks quiet, so it drained"                | Run the check that proves it: deploy, count, depth |
+| "The user can type `/exit` and paste the prompt"      | Launch the successor, then stop the old session    |
+| "The output is stale, I'll add a fix-up pass"         | Move the write to the step that knows the fact     |
+| "It's only a few cents" (against a user's rule)       | The rule binds; never argue it with cost           |
