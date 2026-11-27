@@ -44,6 +44,7 @@ After formatter/linter/type-check pass:
 3. **Push after each commit.**
 4. **Descriptive messages** — explain the "what" concisely.
 5. **Do not open a PR until the user asks.** When they do, invoke the `pull-request-creator` skill (owns title/body/reply discipline).
+   - **Standing exception:** in a repo run by a coordinator session (its `docs/coordination/team-rules.md` says so), opening the ticket's draft PR when its work is done is the user's standing ask, and the coordinator opens and merges PRs as its job. No per-PR ask is needed. Marking ready and merging stay with the coordinator or the user.
 
 **PR description rules worth restating here** (the `pull-request-creator` skill owns the full template):
 
