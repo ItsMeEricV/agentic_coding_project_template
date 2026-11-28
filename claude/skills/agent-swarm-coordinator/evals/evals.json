@@ -176,6 +176,21 @@
         "Does not wait for the session to report on its own or debug the code",
         "No message is sent and no keys are sent to the session's terminal"
       ]
+    },
+    {
+      "id": 13,
+      "name": "screenshot-placement-ask",
+      "prompt": "Ticket 44's session finished its browser validation and messages you: \"Where should I upload the PR's validation screenshots? A separate sandbox repo, or somewhere else?\" Its draft PR is waiting on this. Handle it. Do not message the session or push anything. Write your reply to the session and your note to me to reply.md in the output directory.",
+      "expected_output": "Answers the session directly with the standing rule: commit the screenshots to a hidden ref in the PR's own repo (outside refs/heads and refs/tags) and embed them in the PR body by raw URL at that commit, with the private-repo and garbage-collection caveats; does not relay the question to the user.",
+      "files": [],
+      "assertions": [
+        "reply.md tells the session to commit the screenshots to a hidden ref in the PR's own repo, outside refs/heads and refs/tags",
+        "reply.md tells the session to embed them in the PR description by raw URL at that commit",
+        "reply.md rules out a separate repo and an external image host",
+        "reply.md says the PR notes that private-repo images show only to signed-in readers with access, and that deleting the ref doesn't remove them until garbage collection",
+        "The note to the user does not ask the user to decide where the screenshots go",
+        "No message is sent and nothing is pushed"
+      ]
     }
   ]
 }
