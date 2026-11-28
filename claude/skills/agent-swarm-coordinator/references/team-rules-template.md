@@ -6,7 +6,7 @@ Each section below names what it must settle. Fill it in, or delete the section 
 
 ---
 
-```markdown
+````markdown
 # Rules for every ticket session (<project>)
 
 Read this after your ticket's handoff. The handoff wins where they differ.
@@ -34,6 +34,14 @@ You execute one ticket in your own worktree and branch, named in your handoff. T
 ## After the last task, in this order
 
 1. Open a draft PR (`pull-request-creator` skill). Tell the coordinator the number.
+   - Validation screenshots go on a hidden ref in this repo, outside `refs/heads` and `refs/tags` so no branch or PR lists them, embedded in the PR body by raw URL at that commit. No other repo, no image host, no question to the user or the coordinator: it is a standing answer.
+     ```bash
+     tree=$(for f in <dir>/*.png; do printf '100644 blob %s\t%s\n' "$(git hash-object -w "$f")" "$(basename "$f")"; done | git mktree)
+     sha=$(git commit-tree "$tree" -m "PR #<n> validation screenshots")  # adding more later: -p <the ref's current sha>
+     git push origin "$sha:refs/<project>/attachments/pr-<n>"
+     # embed: ![<what it shows>](https://github.com/<owner>/<repo>/raw/<sha>/<file>.png)
+     ```
+     Say beside them: in a private repo only signed-in readers with access see the images, and deleting the ref doesn't remove them until the host garbage-collects.
 2. <The review skills, in order, each read fresh from its own SKILL.md, never from a summary.>
 3. Reply on the PR to every comment: adopted with the commit, or why not.
 
@@ -58,4 +66,4 @@ Marking the PR ready and merging happen only on <the user's / the coordinator's>
 - <Files never to read or print.>
 - <Domain terms from `KNOWLEDGE.md` that sessions get wrong.>
 - <Generated-not-handwritten artifacts, e.g. migrations, and the exact command.>
-```
+````
